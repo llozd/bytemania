@@ -95,7 +95,10 @@ t  a..h  123  0x7F  ( )
 
 Where C would be undefined, overflow wraps, shifts use their count `& 31`, and `x / 0` and `x % 0` are 0.
 
-The 22 built-in formulas are classic bytebeats from viznut's
+The first 8 built-in formulas are basic waveforms (saw, square, triangle, sine, PWM, sync, XOR and steps), tuned so
+middle C plays a C. `a` and `b` set the tuning, and `c` changes the shape where there is one.
+
+The other 22 are classic bytebeats from viznut's
 [Some deep analysis of one-line music programs](http://countercomplex.blogspot.com/2011/10/some-deep-analysis-of-one-line-music.html)
 (2011) and the [bytebeat composer](https://dollchan.net/bytebeat)'s library, with some of their numbers turned into
 variables. The defaults give the original formula.

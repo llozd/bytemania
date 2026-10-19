@@ -186,7 +186,8 @@ typedef struct {
 } slot_t;
 static slot_t lib[SLOTS] __attribute__((section(".pool")));
 static uint32_t lib_dirty;                      /* bit k: sector k to save, when nothing sounds */
-static uint32_t cur = 2;                        /* the patch playing */
+#define FIRST_PATCH 10u                         /* what plays when nothing was saved: viznut's FIRST */
+static uint32_t cur = FIRST_PATCH;              /* the patch playing */
 static uint32_t patch_seq;                      /* + 1 for each patch picked, made or saved: the screen shows it */
 static char work[TEXT_MAX + 1u];                /* its formula */
 static uint32_t edited;                         /* work is not the patch's own formula any more */
@@ -663,7 +664,7 @@ static void settings_default(settings_t *s)
     uint32_t i;
     memset(s, 0, sizeof *s);
     s->magic = 'C';
-    s->patch = 2;
+    s->patch = FIRST_PATCH;
     s->view = VIEW_SCOPE;
     for (i = 0; i < NMAP; i++) {                /* off; given a CC, slot 1 moves a, 2 b ... 9 glide, 10 volume */
         s->map[i].cc = CC_OFF;
@@ -681,7 +682,7 @@ static void settings_check(settings_t *s)       /* what a power-off or another v
         if (m->min < PARAM[m->target].min || m->min > PARAM[m->target].max ||
             m->max < PARAM[m->target].min || m->max > PARAM[m->target].max) map_reset(m, m->target);
     }
-    if (!patch_ok(s->patch)) s->patch = 2;
+    if (!patch_ok(s->patch)) s->patch = FIRST_PATCH;
     if (s->glide > 10u) s->glide = 0;
     if (s->oct < -2 || s->oct > 2) s->oct = 0;
     s->pick = !!s->pick;

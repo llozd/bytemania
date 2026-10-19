@@ -1,9 +1,18 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* The formulas: classic bytebeats with some of their numbers made variables (the defaults give the original).
- * The first 12 are from viznut's "Some deep analysis of one-line music programs" (2011), credited as there;
+/* The formulas. First 8 basic waveforms, Bytemania's own: on a phase t*a>>b that a = 67, b = 3 tune to the note
+ * (8.375 a step: 261.7 Hz at middle C, 0.6 cents sharp). Then classic bytebeats with some of their numbers made
+ * variables (the defaults give the original): 12 from viznut's "Some deep analysis of one-line music programs" (2011),
  * the rest from the bytebeat composer's library (dollchan.net/bytebeat), credited as there. */
 static const struct { const char *name, *by, *text; int16_t def[4]; } FORMULA[] = {
-    {"SAW", "viznut", "t*a", {1}},
+    {"SAW", "basic wave", "t*a>>b", {67, 3}},
+    {"SQUARE", "basic wave, c: width", "(t*a>>b&255)<c?255:0", {67, 3, 128}},
+    {"TRIANGLE", "basic wave", "((t*a>>b)^-(t*a>>b>>7&1))*2", {67, 3}},
+    {"SINE", "basic wave", "128+((t*a>>b&128)?-1:1)*((t*a>>b&127)*(127-(t*a>>b&127))>>5)", {67, 3}},
+    {"PWM", "basic wave, c: sweep", "(t*a>>b&255)<(t>>c&255)?255:0", {67, 3, 6}},
+    {"SYNC", "basic wave, c: ratio", "(t*a>>b&255)*c>>3", {67, 3, 12}},
+    {"XOR", "basic wave, c: 2nd saw", "(t*a>>b)^(t*c>>b)", {67, 3, 101}},
+    {"STEPS", "basic wave, c: mask", "t*a>>b&c", {67, 3, 224}},
+    {"PLAIN T", "viznut", "t*a", {1}},
     {"MUNCHING", "viznut", "t&t>>a", {8}},
     {"FIRST", "viznut", "t*((t>>a|t>>b)&c&t>>d)", {12, 8, 63, 4}},
     {"FORTY-TWO", "several people", "t*(a&t>>b)", {42, 10}},
@@ -17,7 +26,7 @@ static const struct { const char *name, *by, *text; int16_t def[4]; } FORMULA[] 
     {"MU6K LEAD", "viznut, after Mu6k", "t>>a^t>>b|t>>c|t&d", {6, 8, 12, 63}},
     {"MODEM", "krcko", "(t&t>>a)*(t>>b|t>>c)", {12, 4, 8}},
     {"FRACTAL", "Blueberry", "(t>>a^(t>>a)-1^1)%b*t", {9, 13}},
-    {"TRIANGLE", "ryg", "(t<<a)^-(t>>b&1)", {4, 4}},
+    {"RYG TRI", "ryg", "(t<<a)^-(t>>b&1)", {4, 4}},
     {"JACQUES", "Lord Graga", "a*(t>>b|3*t|t>>(t>>15))+(t>>8&5)", {10, 7}},
     {"LEMMINGS", "marmakoide", "t>>a|t<<b|t&1023^1981|t-67>>c", {5, 4, 4}},
     {"SURFER", "skurk, raer", "t&4096?t/2*(t^t%255)|t>>a:t/8|(t&8192?4*t:t)", {5}},
