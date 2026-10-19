@@ -27,7 +27,7 @@
 #include "bytebeat.c"
 #include "formulas.h"
 
-/* ---- the parameters: one table that the knobs, MIDI and (later) the CC mappings all write */
+/* ---- the parameters: one table that the knobs, MIDI, the CC mappings and the patches all write */
 enum { P_A, P_B, P_C, P_D, P_E, P_F, P_G, P_H, P_GLIDE, P_VOL, P_LOOP, P_LSTART, P_LFINE, P_LLEN, P_N };
 enum { LOOP_OFF, LOOP_ON, LOOP_PING };
 static const struct { int32_t min, max; } PARAM[P_N] = {
@@ -157,22 +157,103 @@ static void note_off(uint32_t note)
     else gate = 0;
 }
 
+/* ---- the patches: the built-in formulas, and 64 user slots of a whole patch (formula, a..h, loop, glide),
+ * 32 to a flash sector (platform.c), kept in RAM */
+#define SLOTS 64u
+#define SLOTS_PER (SLOTS / LIB_SECTORS)
+#define TEXT_MAX 90u                            /* a formula: what the main screen's three lines show */
+#define USER 128u                               /* a patch number: 0..NF-1 built in, USER + k slot k */
+typedef struct {
+    char name[12], text[TEXT_MAX + 2u];         /* both 0-terminated */
+    uint8_t var[BB_VARS], loop, lstart, lfine, llen, glide, used, pad[2];
+} slot_t;
+static slot_t lib[SLOTS] __attribute__((section(".pool")));
+static uint32_t lib_dirty;                      /* bit k: sector k to save, when nothing sounds */
+static uint32_t cur = 2;                        /* the patch playing */
+static char work[TEXT_MAX + 1u];                /* its formula */
+
+static void copy_str(char *d, const char *s, uint32_t max)   /* at most max characters, 0-terminated */
+{
+    uint32_t i;
+    for (i = 0; s[i] && i < max; i++) d[i] = s[i];
+    d[i] = 0;
+}
+
+static void lib_init(void)
+{
+    static bb_prog_t check;
+    uint32_t k;
+    for (k = 0; k < LIB_SECTORS; k++)
+        if (lib_load(k, &lib[k * SLOTS_PER], SLOTS_PER * sizeof(slot_t)))
+            memset(&lib[k * SLOTS_PER], 0, SLOTS_PER * sizeof(slot_t));
+    for (k = 0; k < SLOTS; k++) {               /* a slot that cannot be shown or played reads as empty */
+        lib[k].name[sizeof lib[k].name - 1u] = lib[k].text[TEXT_MAX] = 0;
+        if (lib[k].used != 1u || bb_compile(lib[k].text, &check, 0)) memset(&lib[k], 0, sizeof lib[k]);
+    }
+}
+
+static int patch_ok(uint32_t p) { return p < NF || (p >= USER && p - USER < SLOTS && lib[p - USER].used); }
+static const char *patch_name(uint32_t p) { return p < USER ? FORMULA[p].name : lib[p - USER].name; }
+
+static void patch_pick(uint32_t p)
+{
+    uint32_t i;
+    if (p < USER) {                             /* (the bank compiles: tests/test_bytebeat.c) */
+        copy_str(work, FORMULA[p].text, TEXT_MAX);
+        for (i = 0; i < BB_VARS; i++) param_set(P_A + i, i < 4u ? FORMULA[p].def[i] : 0);
+    } else {
+        const slot_t *s = &lib[p - USER];
+        copy_str(work, s->text, TEXT_MAX);
+        for (i = 0; i < BB_VARS; i++) param_set(P_A + i, s->var[i]);
+        param_set(P_LOOP, s->loop); param_set(P_LSTART, s->lstart); param_set(P_LFINE, s->lfine);
+        param_set(P_LLEN, s->llen); param_set(P_GLIDE, s->glide);
+    }
+    formula_load(work, 0);
+    cur = p;
+}
+
+static uint32_t patch_step(uint32_t p, int32_t n) /* n patches on: the built-ins, then the used slots, round */
+{
+    uint32_t i = p < USER ? p : NF + (p - USER), all = NF + SLOTS;
+    while (n) {
+        i = n > 0 ? (i + 1u) % all : (i + all - 1u) % all;
+        if (i < NF || lib[i - NF].used) n += n > 0 ? -1 : 1;
+    }
+    return i < NF ? i : USER + (i - NF);
+}
+
+static void patch_save(uint32_t k)              /* what plays now, into slot k, keeping its name */
+{
+    slot_t *s = &lib[k];
+    char name[sizeof s->name];
+    uint32_t i;
+    copy_str(name, patch_name(cur), sizeof name - 1u);
+    memset(s, 0, sizeof *s);
+    copy_str(s->name, name, sizeof s->name - 1u);
+    copy_str(s->text, work, TEXT_MAX);
+    for (i = 0; i < BB_VARS; i++) s->var[i] = (uint8_t)param[P_A + i];
+    s->loop = (uint8_t)param[P_LOOP]; s->lstart = (uint8_t)param[P_LSTART]; s->lfine = (uint8_t)param[P_LFINE];
+    s->llen = (uint8_t)param[P_LLEN]; s->glide = (uint8_t)param[P_GLIDE];
+    s->used = 1;
+    lib_dirty |= 1u << (k / SLOTS_PER);
+    cur = USER + k;
+}
+
 /* ---- the screen */
 #define C_ACC RGB(180, 140, 255)                /* lilac */
 #define C_OFF RGB(90, 90, 90)
 
-static void draw_formula(uint32_t f)            /* number and name, author, the formula 30 characters a line */
+static void draw_patch(void)                    /* number and name, author, the formula 30 characters a line */
 {
     char s[32];
-    const char *p = FORMULA[f].text;
-    uint32_t n = 0, y;
-    s[0] = (char)('0' + (f + 1u) / 10u);
-    s[1] = (char)('0' + (f + 1u) % 10u);
-    s[2] = ' ';
-    while (FORMULA[f].name[n] && n < 12u) { s[3u + n] = FORMULA[f].name[n]; n++; }
-    s[3u + n] = 0;
+    const char *p = work;
+    uint32_t n, y;
+    if (cur < USER) { s[0] = (char)('0' + (cur + 1u) / 10u); s[1] = (char)('0' + (cur + 1u) % 10u); n = 2; }
+    else { s[0] = 'U'; s[1] = (char)('0' + (cur - USER + 1u) / 10u); s[2] = (char)('0' + (cur - USER + 1u) % 10u); n = 3; }
+    s[n++] = ' ';
+    copy_str(s + n, patch_name(cur), 11);
     draw_text_box(0, 4, 240, &FONT_L, s, C_ACC, 1);
-    draw_text_box(0, 38, 240, &FONT_S, FORMULA[f].by, C_OFF, 1);
+    draw_text_box(0, 38, 240, &FONT_S, cur < USER ? FORMULA[cur].by : "your patch", C_OFF, 1);
     cv_begin(240, 48, C_BLACK);
     for (y = 0; *p && y < 48u; y += 16u) {
         for (n = 0; *p && n < 30u; n++) s[n] = *p++;
@@ -291,13 +372,6 @@ static int32_t knob(uint32_t enc)               /* detents, 8x when turned fast 
     return n;
 }
 
-static void formula_pick(uint32_t f)
-{
-    uint32_t i;
-    formula_load(FORMULA[f].text, 0);           /* (the bank compiles: tests/test_bytebeat.c) */
-    for (i = 0; i < BB_VARS; i++) param_set(P_A + i, i < 4u ? FORMULA[f].def[i] : 0);
-}
-
 /* ---- CC mappings: a CC moves a parameter between min and max, on any channel */
 #define NMAP 12u
 #define CC_OFF 128u
@@ -328,23 +402,35 @@ static uint32_t put_pad(char *s, uint32_t i, uint32_t v, uint32_t w)   /* v righ
     return i;
 }
 
-static void draw_cc_head(int learn)
+/* ---- the list screens (the CC map, save): 12 rows of 16 px from y = 40, each drawn again only when it changed */
+enum { ROW_PLAIN, ROW_DIM, ROW_SEL, ROW_HOT };
+static char rows_drawn[12][34];
+
+static void draw_head(const char *title, uint16_t c, const char *cols)
 {
-    draw_text_box(0, 4, 240, &FONT_S, learn ? "LEARN: MOVE A CONTROL" : "CC MAP", learn ? C_WHITE : C_ACC, 1);
-    draw_text_box(0, 22, 240, &FONT_S, " #  CC TO    MIN-MAX NOW", C_OFF, 1);
+    draw_text_box(0, 4, 240, &FONT_S, title, c, 1);
+    draw_text_box(0, 22, 240, &FONT_S, cols, C_OFF, 1);
 }
 
-static char cc_drawn[NMAP][32];                 /* what each row shows: redraw only those that changed */
+static void draw_row(uint32_t r, const char *s, uint32_t look)
+{
+    char k[34] = {0};
+    k[0] = (char)('0' + look);
+    copy_str(k + 1, s, 32);
+    if (!memcmp(k, rows_drawn[r], sizeof k)) return;
+    memcpy(rows_drawn[r], k, sizeof k);
+    cv_begin(240, 16, look == ROW_SEL ? C_ACC : look == ROW_HOT ? C_WHITE : C_BLACK);
+    cv_text(24, 0, &FONT_S, s, look >= ROW_SEL ? C_BLACK : look == ROW_DIM ? C_OFF : C_WHITE);
+    cv_blit(0, 40u + 16u * r);
+}
 
 static void draw_cc_rows(const ccmap_t *map, uint32_t sel, int learn)
 {
     uint32_t r;
     for (r = 0; r < NMAP; r++) {
         const ccmap_t *m = &map[r];
-        char s[32] = {0};
-        uint32_t i = 0, k;
-        s[i++] = r == sel ? (learn ? 'L' : 'S') : ' ';   /* (the row's look, not shown) */
-        i = put_pad(s, i, r + 1u, 2);
+        char s[32];
+        uint32_t i = put_pad(s, 0, r + 1u, 2), k;
         s[i++] = ' ';
         i = m->cc == CC_OFF ? put(s, i, "OFF") : put_pad(s, i, m->cc, 3);
         s[i++] = ' ';
@@ -357,61 +443,164 @@ static void draw_cc_rows(const ccmap_t *map, uint32_t sel, int learn)
         s[i++] = ' ';
         i = put_pad(s, i, (uint32_t)param[m->target], 3);
         s[i] = 0;
-        if (!memcmp(s, cc_drawn[r], sizeof s)) continue;
-        memcpy(cc_drawn[r], s, sizeof s);
-        cv_begin(240, 16, s[0] == ' ' ? C_BLACK : s[0] == 'L' ? C_WHITE : C_ACC);
-        cv_text(24, 0, &FONT_S, s + 1, s[0] == ' ' ? (m->cc == CC_OFF ? C_OFF : C_WHITE) : C_BLACK);
-        cv_blit(0, 40u + 16u * r);
+        draw_row(r, s, r == sel ? (learn ? ROW_HOT : ROW_SEL) : m->cc == CC_OFF ? ROW_DIM : ROW_PLAIN);
     }
 }
 
-typedef struct { uint8_t magic, formula, glide, pick, view; int8_t oct; ccmap_t map[NMAP]; } settings_t;   /* what survives a power-off */
+static void draw_save_rows(uint32_t sel)        /* the 12 slots around sel */
+{
+    uint32_t r, top = sel < 6u ? 0u : sel - 6u > SLOTS - 12u ? SLOTS - 12u : sel - 6u;
+    for (r = 0; r < 12u; r++) {
+        uint32_t k = top + r;
+        char s[20] = {'U', (char)('0' + (k + 1u) / 10u), (char)('0' + (k + 1u) % 10u), ' '};
+        copy_str(s + 4, lib[k].used ? lib[k].name : "-", 11);
+        draw_row(r, s, k == sel ? ROW_SEL : lib[k].used ? ROW_PLAIN : ROW_DIM);
+    }
+}
 
-static void settings_default(settings_t *set)
+/* ---- the settings: what survives a power-off */
+typedef struct { uint8_t magic, patch, glide, pick, view; int8_t oct; ccmap_t map[NMAP]; } settings_t;
+
+static void settings_default(settings_t *s)
 {
     uint32_t i;
-    memset(set, 0, sizeof *set);
-    set->magic = 'C';
-    set->formula = 2;
-    set->view = VIEW_SCOPE;
+    memset(s, 0, sizeof *s);
+    s->magic = 'C';
+    s->patch = 2;
+    s->view = VIEW_SCOPE;
     for (i = 0; i < NMAP; i++) {                /* off; given a CC, slot 1 moves a, 2 b ... 9 glide, 10 volume */
-        set->map[i].cc = CC_OFF;
-        map_reset(&set->map[i], i < P_N ? i : 0u);
+        s->map[i].cc = CC_OFF;
+        map_reset(&s->map[i], i < P_N ? i : 0u);
     }
 }
 
-static void app_main(void)
+static void settings_check(settings_t *s)       /* what a power-off or another version may have left */
 {
-    settings_t set;
-    uint32_t prev = 0, sounding = 0, k, t_change = 0, dirty = 0, t_load = 0, load = 0;
-    uint32_t f_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u, t_view = 0, view_t = ~0u, view_stale = 1, view_fresh = 1;
-    int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[BB_VARS] = {0};
-    uint8_t key_note[27] = {0};                 /* the note each key started */
-    uint32_t scr_cc = 0, sel = 0, learn = 0, scr_fresh = 1, learn_drawn = ~0u, bank_drawn = ~0u;
-    uint32_t seq_turned = 0, seq_down = 0, loop_last = LOOP_ON;   /* SEQ: turned while held, when pressed; a tap's mode */   /* the CC screen: on, its slot, learning, to draw whole */
-    settings_default(&set);
-    if (settings_load(&set, sizeof set) || set.magic != 'C') settings_default(&set);
+    uint32_t k;
     for (k = 0; k < NMAP; k++) {
-        ccmap_t *m = &set.map[k];
+        ccmap_t *m = &s->map[k];
         if (m->cc > 119u) m->cc = CC_OFF;
         if (m->target >= P_N) map_reset(m, 0);
         if (m->min < PARAM[m->target].min || m->min > PARAM[m->target].max ||
             m->max < PARAM[m->target].min || m->max > PARAM[m->target].max) map_reset(m, m->target);
     }
-    if (set.formula >= NF) set.formula = 0;
-    if (set.glide > 10u) set.glide = 0;
-    if (set.oct < -2 || set.oct > 2) set.oct = 0;
-    set.pick = !!set.pick;
-    if (set.view >= VIEWS) set.view = VIEW_SCOPE;
+    if (!patch_ok(s->patch)) s->patch = 2;
+    if (s->glide > 10u) s->glide = 0;
+    if (s->oct < -2 || s->oct > 2) s->oct = 0;
+    s->pick = !!s->pick;
+    if (s->view >= VIEWS) s->view = VIEW_SCOPE;
+}
+
+/* ---- the panel and the screens */
+enum { SCR_MAIN, SCR_CC, SCR_SAVE };
+static settings_t set;
+static uint32_t dirty, t_change;                /* the settings changed, when (saved 2 s later, when silent) */
+static uint32_t scr = SCR_MAIN, scr_fresh = 1;  /* the screen showing; to draw whole */
+static uint32_t cc_sel, learn, save_sel;        /* the CC screen's slot, learning; the save screen's slot */
+static uint32_t bank, seq_turned, seq_down, loop_last = LOOP_ON;   /* the knobs' bank; SEQ: turned while held, when
+                                                                       pressed (a tap, or a hold); the mode a tap turns on */
+
+static void changed(void) { dirty = 1; t_change = fm1_ms; }
+static void screen(uint32_t s) { scr = s; learn = 0; scr_fresh = 1; }
+
+static void pick(uint32_t p)
+{
+    patch_pick(p);
+    set.patch = (uint8_t)p;
+    set.glide = (uint8_t)param[P_GLIDE];
+    changed();
+}
+
+static void main_input(uint32_t b, uint32_t rel)
+{
+    int32_t n;
+    uint32_t k;
+    if (b & (1u << BTN_SEL)) { set.pick ^= 1u; changed(); }
+    if (b & (1u << BTN_FX)) { set.view = (uint8_t)((set.view + 1u) % VIEWS); changed(); }
+    if (b & (1u << BTN_SAVE)) {                 /* to the slot playing, else the first free one */
+        save_sel = 0;
+        if (cur >= USER) save_sel = cur - USER;
+        else while (save_sel < SLOTS - 1u && lib[save_sel].used) save_sel++;
+        screen(SCR_SAVE);
+    }
+    if ((n = fm1_enc_take(ENC_PRESETS))) pick(patch_step(cur, n));
+    if (b & (1u << BTN_SEQ)) { seq_turned = 0; seq_down = fm1_ms; }
+    for (k = 0; k < 4u; k++) {
+        uint32_t id = bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k;
+        if (!(n = id == P_LOOP || id == P_LLEN ? fm1_enc_take(ENC_KNOB1 + k) : knob(ENC_KNOB1 + k))) continue;
+        param_set(id, param[id] + n);
+        if (bank == KNOBS_LOOP) seq_turned = 1;
+        if (id == P_LOOP && param[P_LOOP]) loop_last = (uint32_t)param[P_LOOP];
+    }
+    if (rel & (1u << BTN_SEQ) && !seq_turned && fm1_ms - seq_down < 300u)   /* a tap, not a hold */
+        param_set(P_LOOP, param[P_LOOP] ? LOOP_OFF : (int32_t)loop_last);
+    if ((n = fm1_enc_take(ENC_SELECT))) {
+        param_set(P_GLIDE, param[P_GLIDE] + n);
+        set.glide = (uint8_t)param[P_GLIDE];
+        changed();
+    }
+}
+
+static void cc_input(uint32_t b)
+{
+    ccmap_t *m = &set.map[cc_sel];
+    int32_t lo = PARAM[m->target].min, hi = PARAM[m->target].max, n, c;
+    if (b & (1u << BTN_REC)) learn ^= 1u;
+    if ((n = fm1_enc_take(ENC_SELECT))) {
+        c = (int32_t)cc_sel + n;
+        cc_sel = c < 0 ? 0u : c >= (int32_t)NMAP ? NMAP - 1u : (uint32_t)c;
+        learn = 0;
+    }
+    if ((n = knob(ENC_KNOB1))) {                /* off, 0..119 (120..127 are MIDI's channel modes) */
+        c = (m->cc == CC_OFF ? -1 : (int32_t)m->cc) + n;
+        m->cc = c < 0 ? (uint8_t)CC_OFF : (uint8_t)(c > 119 ? 119 : c);
+        changed();
+    }
+    if ((n = fm1_enc_take(ENC_KNOB2))) {
+        c = (int32_t)m->target + n;
+        map_reset(m, c < 0 ? 0u : c >= (int32_t)P_N ? P_N - 1u : (uint32_t)c);
+        changed();
+    }
+    if ((n = knob(ENC_KNOB3))) { c = m->min + n; m->min = (int16_t)(c < lo ? lo : c > hi ? hi : c); changed(); }
+    if ((n = knob(ENC_KNOB4))) { c = m->max + n; m->max = (int16_t)(c < lo ? lo : c > hi ? hi : c); changed(); }
+}
+
+static void save_input(uint32_t b)
+{
+    int32_t n = fm1_enc_take(ENC_SELECT) + fm1_enc_take(ENC_PRESETS), c;
+    if (n) {
+        c = (int32_t)save_sel + n;
+        save_sel = c < 0 ? 0u : c >= (int32_t)SLOTS ? SLOTS - 1u : (uint32_t)c;
+    }
+    if (b & (1u << BTN_SAVE)) {
+        patch_save(save_sel);
+        set.patch = (uint8_t)cur;
+        changed();
+        screen(SCR_MAIN);
+    } else if (b & (1u << BTN_HOME))
+        screen(SCR_MAIN);
+}
+
+static void app_main(void)
+{
+    uint32_t prev = 0, sounding = 0, k, t_load = 0, load = 0;
+    uint32_t p_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u, head_drawn = ~0u, bank_drawn = ~0u;
+    uint32_t t_view = 0, view_t = ~0u, view_shown = ~0u, view_fresh = 1;
+    int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[BB_VARS] = {0};
+    uint8_t key_note[27] = {0};                 /* the note each key started */
+    lib_init();
+    settings_default(&set);
+    if (settings_load(&set, sizeof set) || set.magic != 'C') settings_default(&set);
+    settings_check(&set);
     shade_init();
-    formula_pick(set.formula);
-    param_set(P_GLIDE, set.glide);
     param_set(P_VOL, 127);
     param_set(P_LLEN, 8);                       /* 4096 steps, half a second at middle C */
+    patch_pick(set.patch);
+    if (set.patch < USER) param_set(P_GLIDE, set.glide);   /* (a slot brings its own) */
 
     for (;;) {
-        uint32_t keys, down, up, rel, b, base = (uint32_t)(53 + 12 * set.oct), st_now, bank;
-        int32_t n, v[4];
+        uint32_t keys, down, up, rel, b, base = (uint32_t)(53 + 12 * set.oct), st_now;
+        int32_t v[4];
         uint8_t st, d1, d2;
         platform_poll();
 
@@ -427,7 +616,7 @@ static void app_main(void)
             }
             if (!(down >> k & 1u)) continue;
             if (set.pick) {
-                if (k < NF) { set.formula = (uint8_t)k; formula_pick(k); dirty = 1; t_change = fm1_ms; }
+                if (k < NF) pick(k);
                 continue;
             }
             key_note[k] = (uint8_t)(base + k);
@@ -438,76 +627,28 @@ static void app_main(void)
 
         b = fm1_input_edges(&rel);
         bank = fm1_in.buttons >> BTN_SEQ & 1u ? KNOBS_LOOP : fm1_in.buttons >> BTN_HOME & 1u ? KNOBS_EH : KNOBS_AD;
-        if (b & (1u << BTN_OCT_DOWN) && set.oct > -2) { set.oct--; dirty = 1; t_change = fm1_ms; }
-        if (b & (1u << BTN_OCT_UP) && set.oct < 2) { set.oct++; dirty = 1; t_change = fm1_ms; }
-        if (b & (1u << BTN_GLO)) { scr_cc ^= 1u; learn = 0; scr_fresh = 1; }
-
-        if (!scr_cc) {
-            if (b & (1u << BTN_SEL)) { set.pick ^= 1u; dirty = 1; t_change = fm1_ms; }
-            if (b & (1u << BTN_FX)) { set.view = (uint8_t)((set.view + 1u) % VIEWS); view_stale = 1; dirty = 1; t_change = fm1_ms; }
-            if ((n = fm1_enc_take(ENC_PRESETS))) {
-                set.formula = (uint8_t)(((int32_t)set.formula + n % (int32_t)NF + (int32_t)NF) % (int32_t)NF);
-                formula_pick(set.formula); dirty = 1; t_change = fm1_ms;
-            }
-            if (b & (1u << BTN_SEQ)) { seq_turned = 0; seq_down = fm1_ms; }
-            for (k = 0; k < 4u; k++) {
-                uint32_t id = bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k;
-                if (!(n = id == P_LOOP || id == P_LLEN ? fm1_enc_take(ENC_KNOB1 + k) : knob(ENC_KNOB1 + k))) continue;
-                param_set(id, param[id] + n);
-                if (bank == KNOBS_LOOP) seq_turned = 1;
-                if (id == P_LOOP && param[P_LOOP]) loop_last = (uint32_t)param[P_LOOP];
-            }
-            if (rel & (1u << BTN_SEQ) && !seq_turned && fm1_ms - seq_down < 300u)   /* a tap, not a hold */
-                param_set(P_LOOP, param[P_LOOP] ? LOOP_OFF : (int32_t)loop_last);
-            if ((n = fm1_enc_take(ENC_SELECT))) {
-                param_set(P_GLIDE, param[P_GLIDE] + n);
-                set.glide = (uint8_t)param[P_GLIDE]; dirty = 1; t_change = fm1_ms;
-            }
-        } else {
-            ccmap_t *m = &set.map[sel];
-            int32_t lo = PARAM[m->target].min, hi = PARAM[m->target].max, c;
-            if (b & (1u << BTN_REC)) learn ^= 1u;
-            if ((n = fm1_enc_take(ENC_SELECT))) {
-                c = (int32_t)sel + n;
-                sel = c < 0 ? 0u : c >= (int32_t)NMAP ? NMAP - 1u : (uint32_t)c;
-                learn = 0;
-            }
-            if ((n = knob(ENC_KNOB1))) {        /* off, 0..119 (120..127 are MIDI's channel modes) */
-                c = (m->cc == CC_OFF ? -1 : (int32_t)m->cc) + n;
-                m->cc = c < 0 ? (uint8_t)CC_OFF : (uint8_t)(c > 119 ? 119 : c);
-                dirty = 1; t_change = fm1_ms;
-            }
-            if ((n = fm1_enc_take(ENC_KNOB2))) {
-                c = (int32_t)m->target + n;
-                map_reset(m, c < 0 ? 0u : c >= (int32_t)P_N ? P_N - 1u : (uint32_t)c);
-                dirty = 1; t_change = fm1_ms;
-            }
-            if ((n = knob(ENC_KNOB3))) {
-                c = m->min + n;
-                m->min = (int16_t)(c < lo ? lo : c > hi ? hi : c);
-                dirty = 1; t_change = fm1_ms;
-            }
-            if ((n = knob(ENC_KNOB4))) {
-                c = m->max + n;
-                m->max = (int16_t)(c < lo ? lo : c > hi ? hi : c);
-                dirty = 1; t_change = fm1_ms;
-            }
-        }
+        if (b & (1u << BTN_OCT_DOWN) && set.oct > -2) { set.oct--; changed(); }
+        if (b & (1u << BTN_OCT_UP) && set.oct < 2) { set.oct++; changed(); }
+        if (b & (1u << BTN_GLO)) screen(scr == SCR_CC ? SCR_MAIN : SCR_CC);
+        else if (scr == SCR_MAIN) main_input(b, rel);
+        else if (scr == SCR_CC) cc_input(b);
+        else save_input(b);
 
         while (midi_get(&st, &d1, &d2)) {       /* USB-MIDI in, any channel */
             if ((st & 0xF0u) == 0x90u && d2) note_on(d1, d2);
             else if ((st & 0xF0u) == 0x80u || (st & 0xF0u) == 0x90u) note_off(d1);
             else if ((st & 0xF0u) == 0xE0u) bend_set((int32_t)((uint32_t)d2 << 7 | d1) - 8192);
             else if ((st & 0xF0u) == 0xB0u && d1 < 120u) {
-                if (learn) { set.map[sel].cc = d1; learn = 0; dirty = 1; t_change = fm1_ms; }
+                if (learn) { set.map[cc_sel].cc = d1; learn = 0; changed(); }
                 cc_in(set.map, d1, d2);
             }
         }
 
         for (k = 0; k < 27u; k++)               /* lit: the formula picked, or the note that sounds */
-            fm1_led_key(KEY_LED(k), set.pick ? k == set.formula : gate && cur_note == base + k);
+            fm1_led_key(KEY_LED(k), set.pick ? k == cur : gate && cur_note == base + k);
         fm1_led_key(BTN_SEL, set.pick);
-        fm1_led_key(BTN_GLO, scr_cc);
+        fm1_led_key(BTN_GLO, scr == SCR_CC);
+        fm1_led_key(BTN_SAVE, scr == SCR_SAVE);
         fm1_led_key(BTN_REC, learn);
         fm1_led_key(BTN_HOME, bank == KNOBS_EH);
         fm1_led_key(BTN_SEQ, param[P_LOOP] != LOOP_OFF);
@@ -521,32 +662,36 @@ static void app_main(void)
         if (scr_fresh) {                        /* a screen comes up: everything on it is drawn again */
             scr_fresh = 0;
             lcd_fill(0, 0, 240, 240, C_BLACK);
-            f_drawn = note_drawn = status_drawn = ~0u;
+            p_drawn = note_drawn = status_drawn = head_drawn = view_shown = ~0u;
             for (k = 0; k < 4u; k++) v_drawn[k] = -1;
-            view_stale = 1;
-            memset(cc_drawn, 0, sizeof cc_drawn);
-            learn_drawn = ~0u;
-        }
-        if (scr_cc) {
-            if (learn != learn_drawn) { learn_drawn = learn; draw_cc_head((int)learn); }
-            draw_cc_rows(set.map, sel, (int)learn);
+            memset(rows_drawn, 0, sizeof rows_drawn);
         }
         for (k = 0; k < BB_VARS; k++)           /* any of a..h changed: the views show something else */
-            if (param[P_A + k] != v_seen[k]) { v_seen[k] = param[P_A + k]; view_stale = view_fresh = 1; }
-        if (!scr_cc) {                          /* the main screen */
+            if (param[P_A + k] != v_seen[k]) { v_seen[k] = param[P_A + k]; view_fresh = 1; view_t = ~0u; }
+        if (scr == SCR_CC) {
+            if (learn != head_drawn) {
+                head_drawn = learn;
+                draw_head(learn ? "LEARN: MOVE A CONTROL" : "CC MAP", learn ? C_WHITE : C_ACC, " #  CC TO    MIN-MAX NOW");
+            }
+            draw_cc_rows(set.map, cc_sel, (int)learn);
+        } else if (scr == SCR_SAVE) {
+            if (head_drawn) { head_drawn = 0; draw_head("SAVE TO", C_ACC, "SAVE: OK    HOME: CANCEL"); }
+            draw_save_rows(save_sel);
+        } else {
             for (k = 0; k < 4u; k++) v[k] = param[bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k];
             st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load;
-            if (set.formula != f_drawn) { f_drawn = set.formula; draw_formula(set.formula); view_stale = view_fresh = 1; }
+            if (cur != p_drawn) { p_drawn = cur; draw_patch(); view_fresh = 1; view_t = ~0u; }
             if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3] || bank != bank_drawn) {
                 for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
                 bank_drawn = bank;
                 draw_knobs(bank);
             }
-            if (fm1_ms - t_view >= 40u && (t_now != view_t || view_stale)) {
+            if (set.view != view_shown) { view_shown = set.view; view_t = ~0u; }
+            if (fm1_ms - t_view >= 40u && t_now != view_t) {
                 t_view = fm1_ms;                /* 25 frames a second, while t moves or what it shows changed */
                 view_t = t_now;
                 draw_view(set.view, (int)view_fresh);
-                view_stale = view_fresh = 0;
+                view_fresh = 0;
             }
             if (cur_note != note_drawn || st_now != status_drawn) {
                 note_drawn = cur_note; status_drawn = st_now;
@@ -554,9 +699,14 @@ static void app_main(void)
             }
         }
 
-        if (dirty && !gate && fm1_ms - t_change > 2000u) {   /* 2 s after the change, when silent (an erase stalls the sound) */
+        if (!gate && dirty && fm1_ms - t_change > 2000u) {   /* 2 s after the change, when silent (an erase stalls the sound) */
             settings_save(&set, sizeof set);
             dirty = 0;
+        }
+        if (!gate && lib_dirty) {               /* a slot saved: its sector, when silent */
+            for (k = 0; k < LIB_SECTORS; k++)
+                if (lib_dirty >> k & 1u) lib_save(k, &lib[k * SLOTS_PER], SLOTS_PER * sizeof(slot_t));
+            lib_dirty = 0;
         }
     }
 }
