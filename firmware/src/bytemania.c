@@ -7,7 +7,7 @@
  *   FX         the view: scope / raster
  *   GLO        the CC screen (and back)
  *   PRESETS    the formula
- *   KNOB1..4   the variables a..d (faster when turned fast)
+ *   KNOB1..4   the variables a..d (faster when turned fast); with HOME held, e..h
  *   SELECT     the glide
  *   OCT- OCT+  the octave
  *   MASTER     the volume (platform.c)
@@ -177,15 +177,15 @@ static uint32_t put_num(char *s, uint32_t i, uint32_t v)
     return i;
 }
 
-static void draw_vars(const int32_t *v)         /* a..d, 60 px each */
+static void draw_vars(const int32_t *v, uint32_t bank)   /* a..d, or e..h (bank 4), 60 px each */
 {
     uint32_t i;
     cv_begin(240, 16, C_BLACK);
     for (i = 0; i < 4u; i++) {
-        char name[2] = {(char)('A' + i), 0}, d[4];
+        char name[2] = {(char)('A' + bank + i), 0}, d[4];
         int32_t x = (int32_t)i * 60 + 10;
         d[put_num(d, 0, (uint32_t)v[i])] = 0;
-        cv_text(x, 0, &FONT_S, name, C_OFF);
+        cv_text(x, 0, &FONT_S, name, bank ? C_ACC : C_OFF);
         cv_text(x + 16, 0, &FONT_S, d, C_WHITE);
     }
     cv_blit(0, 178);
@@ -366,7 +366,7 @@ static void app_main(void)
     uint32_t f_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u, t_view = 0, view_t = ~0u, view_stale = 1, view_fresh = 1;
     int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[BB_VARS] = {0};
     uint8_t key_note[27] = {0};                 /* the note each key started */
-    uint32_t scr_cc = 0, sel = 0, learn = 0, scr_fresh = 1, learn_drawn = ~0u;   /* the CC screen: on, its slot, learning, to draw whole */
+    uint32_t scr_cc = 0, sel = 0, learn = 0, scr_fresh = 1, learn_drawn = ~0u, bank_drawn = ~0u;   /* the CC screen: on, its slot, learning, to draw whole */
     settings_default(&set);
     if (settings_load(&set, sizeof set) || set.magic != 'C') settings_default(&set);
     for (k = 0; k < NMAP; k++) {
@@ -387,7 +387,7 @@ static void app_main(void)
     param_set(P_VOL, 127);
 
     for (;;) {
-        uint32_t keys, down, up, rel, b, base = (uint32_t)(53 + 12 * set.oct), st_now;
+        uint32_t keys, down, up, rel, b, base = (uint32_t)(53 + 12 * set.oct), st_now, bank;
         int32_t n, v[4];
         uint8_t st, d1, d2;
         platform_poll();
@@ -414,6 +414,7 @@ static void app_main(void)
         }
 
         b = fm1_input_edges(&rel);
+        bank = fm1_in.buttons >> BTN_HOME & 1u ? 4u : 0u;
         if (b & (1u << BTN_OCT_DOWN) && set.oct > -2) { set.oct--; dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_OCT_UP) && set.oct < 2) { set.oct++; dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_GLO)) { scr_cc ^= 1u; learn = 0; scr_fresh = 1; }
@@ -425,8 +426,8 @@ static void app_main(void)
                 set.formula = (uint8_t)(((int32_t)set.formula + n % (int32_t)NF + (int32_t)NF) % (int32_t)NF);
                 formula_pick(set.formula); dirty = 1; t_change = fm1_ms;
             }
-            for (k = 0; k < 4u; k++)
-                if ((n = knob(ENC_KNOB1 + k))) param_set(P_A + k, param[P_A + k] + n);
+            for (k = 0; k < 4u; k++)            /* a..d, or e..h while HOME is held */
+                if ((n = knob(ENC_KNOB1 + k))) param_set(P_A + bank + k, param[P_A + bank + k] + n);
             if ((n = fm1_enc_take(ENC_SELECT))) {
                 param_set(P_GLIDE, param[P_GLIDE] + n);
                 set.glide = (uint8_t)param[P_GLIDE]; dirty = 1; t_change = fm1_ms;
@@ -477,6 +478,7 @@ static void app_main(void)
         fm1_led_key(BTN_SEL, set.pick);
         fm1_led_key(BTN_GLO, scr_cc);
         fm1_led_key(BTN_REC, learn);
+        fm1_led_key(BTN_HOME, bank != 0u);
         fm1_led_key(BTN_OCT_DOWN, set.oct < 0);
         fm1_led_key(BTN_OCT_UP, set.oct > 0);
 
@@ -500,12 +502,13 @@ static void app_main(void)
         for (k = 0; k < BB_VARS; k++)           /* any of a..h changed: the views show something else */
             if (param[P_A + k] != v_seen[k]) { v_seen[k] = param[P_A + k]; view_stale = view_fresh = 1; }
         if (!scr_cc) {                          /* the main screen */
-            for (k = 0; k < 4u; k++) v[k] = param[P_A + k];
+            for (k = 0; k < 4u; k++) v[k] = param[P_A + bank + k];
             st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load;
             if (set.formula != f_drawn) { f_drawn = set.formula; draw_formula(set.formula); view_stale = view_fresh = 1; }
-            if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3]) {
+            if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3] || bank != bank_drawn) {
                 for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
-                draw_vars(v);
+                bank_drawn = bank;
+                draw_vars(v, bank);
             }
             if (fm1_ms - t_view >= 40u && (t_now != view_t || view_stale)) {
                 t_view = fm1_ms;                /* 25 frames a second, while t moves or what it shows changed */
