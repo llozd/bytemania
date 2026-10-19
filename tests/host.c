@@ -25,6 +25,8 @@
 #define HALF_FRAMES 256u
 
 static volatile uint32_t fm1_ms;
+#define FM1_TICKS_PER_US 24u
+static uint32_t fm1_ticks(void) { return 0; }   /* (no clock: the DSP load shows 0) */
 static struct { uint32_t notes, buttons; } fm1_in;
 static uint32_t host_edges;
 static uint32_t fm1_input_edges(uint32_t *released) { uint32_t b = host_edges; host_edges = 0; *released = 0; return b; }
@@ -89,19 +91,27 @@ static void app_main(void);
  * file (the second argument) replaces it, a line each: "T keys MASK" (hex or decimal), "T btn ID", "T midi ST D1 D2",
  * "T enc ID STEPS", "T end" */
 typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; int enc, steps; } host_ev_t;
-static const host_ev_t SCRIPT0[] = {
-    {200, 1u << 7, -1, 0, 0, 0},                                /* C4 */
-    {700, 1u << 7 | 1u << 11 | 1u << 14, -1, 0, 0, 0},          /* + E4 G4: a chord */
-    {1500, 0, -1, 0, 0, 0},
-    {1700, 0, -1, 0x90, 81, 120},                               /* MIDI in: A5 */
-    {2300, 0, -1, 0x80, 81, 0},
-    {2500, 0, BTN_OCT_UP, 0, 0, 0},
-    {2700, 1u << 2 | 1u << 9, -1, 0, 0, 0},                     /* G4 + D5, an octave up */
-    {3400, 0, -1, 0, 0, 0},
+static const host_ev_t SCRIPT0[] = {             /* t, keys, btn, MIDI, encoder steps */
+    {200, 1u << 7, -1, 0, 0, 0, 0, 0},                          /* C4: FIRST */
+    {1200, 1u << 7 | 1u << 9, -1, 0, 0, 0, 0, 0},               /* + D4, legato */
+    {1600, 0, -1, 0, 0, 0, 0, 0},
+    {1700, 0, -1, 0, 0, 0, ENC_PRESETS, 1},                     /* FORTY-TWO */
+    {1800, 0, -1, 0x90, 60, 120, 0, 0},                         /* MIDI in: C4 */
+    {2400, 0, -1, 0, 0, 0, ENC_KNOB1, 3},                       /* a 42 -> 45 */
+    {2600, 0, -1, 0, 0, 0, ENC_SELECT, 6},                      /* glide */
+    {2700, 0, -1, 0x90, 67, 120, 0, 0},                         /* G4, glides from C4 */
+    {3200, 0, -1, 0x80, 67, 0, 0, 0},
+    {3300, 0, -1, 0x80, 60, 0, 0, 0},
+    {3400, 0, BTN_SEL, 0, 0, 0, 0, 0},                          /* the keys pick formulas */
+    {3500, 1u << 5, -1, 0, 0, 0, 0, 0},                         /* MIIRO */
+    {3600, 0, -1, 0, 0, 0, 0, 0},
+    {3700, 0, BTN_SEL, 0, 0, 0, 0, 0},                          /* the keys play */
+    {3800, 1u << 7, -1, 0, 0, 0, 0, 0},
+    {4600, 0, -1, 0, 0, 0, 0, 0},
 };
 static const host_ev_t *script = SCRIPT0;
 static uint32_t script_n = sizeof SCRIPT0 / sizeof SCRIPT0[0], end_ms = 6500, frame_fps;
-static const uint32_t SHOT[] = {1000, 3000};
+static const uint32_t SHOT[] = {1000, 3000, 3550};
 
 static void read_script(const char *path)
 {
