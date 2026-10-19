@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "bytebeat.c"
+#include "formulas.h"
 
 #define VARS int32_t a = v[0], b = v[1], c = v[2], d = v[3], e = v[4], f = v[5], g = v[6], h = v[7]; \
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h
@@ -23,10 +24,27 @@
     X(f12, t?a?1:2:3) \
     X(f13, -(-t)*+3-t%7)
 
+#define ORIGINALS(X) /* formulas.h's bank, in order, as first published */ \
+    X(o0, t) \
+    X(o1, t&t>>8) \
+    X(o2, t*(((t>>12)|(t>>8))&(63&(t>>4)))) \
+    X(o3, t*(42&t>>10)) \
+    X(o4, t*(t>>9|t>>13)&16) \
+    X(o5, t*5&(t>>7)|t*3&(t*4>>10)) \
+    X(o6, (t*5&t>>7)|(t*3&t>>10)) \
+    X(o7, t*9&t>>4|t*5&t>>7|t*3&t/1024) \
+    X(o8, t*(0xCA98>>(t>>9&14)&15)|t>>8) \
+    X(o9, t>>6&1?t>>5:-t>>4) \
+    X(o10, t*(5+((t>>11)&5))) \
+    X(o11, t>>6^t>>8|t>>12|t&63)
+
 #define FN(name, expr) static int32_t name(int32_t t, const int32_t *v) { VARS; return (expr); }
 FORMULAS(FN)
+ORIGINALS(FN)
 #define ROW(name, expr) {#expr, name},
-static const struct { const char *s; int32_t (*fn)(int32_t, const int32_t *); } CASES[] = { FORMULAS(ROW) };
+typedef struct { const char *s; int32_t (*fn)(int32_t, const int32_t *); } case_t;
+static const case_t CASES[] = { FORMULAS(ROW) };
+static const case_t ORIG[] = { ORIGINALS(ROW) };
 
 static int fails;
 
@@ -61,6 +79,17 @@ int main(void)
             int32_t want = CASES[i].fn((int32_t)k, v), got = bb_run(&p, k, v);
             if (got != want) { printf("FAIL %s at t=%u: %d, want %d\n", CASES[i].s, k, got, want); fails++; break; }
         }
+    }
+
+    /* the bank with its defaults is the original */
+    if (sizeof ORIG / sizeof ORIG[0] != NF) { printf("FAIL the bank has %u formulas, ORIGINALS %u\n", (unsigned)NF, (unsigned)(sizeof ORIG / sizeof ORIG[0])); fails++; }
+    for (i = 0; i < NF && i < sizeof ORIG / sizeof ORIG[0]; i++) {
+        int32_t dv[BB_VARS] = {0};
+        const char *err = bb_compile(FORMULA[i].text, &p, 0);
+        for (k = 0; k < 4u; k++) dv[k] = FORMULA[i].def[k];
+        if (err) { printf("FAIL %s: %s\n", FORMULA[i].name, err); fails++; continue; }
+        for (k = 0; k < 300000u; k += 7u)
+            if (bb_run(&p, k, dv) != ORIG[i].fn((int32_t)k, dv)) { printf("FAIL %s is not %s at t=%u\n", FORMULA[i].name, ORIG[i].s, k); fails++; break; }
     }
 
     /* where C is undefined */
