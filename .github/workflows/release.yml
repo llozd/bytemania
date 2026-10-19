@@ -12,4 +12,4 @@ jobs:
     with:
       build: ./build.sh --release "${GITHUB_REF_NAME#v}"
       packages: build/*.fwsc
-      test: tests/run_host.sh
+      test: tests/run_tests.sh && tests/run_host.sh

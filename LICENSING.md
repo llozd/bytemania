@@ -12,6 +12,13 @@ complete source under the same licence too.
 | The app `firmware/src/bytemania.c` as it came from [Dinghy](https://github.com/zvenson/dinghy), the wiring `platform.c`, the host mode `tests/`, the docs | zvenson |
 | The changes to the app and the build since Dinghy | llozd |
 
+## The built-in formulas
+
+`firmware/src/formulas.h` holds classic bytebeat formulas as published in viznut's
+[Some deep analysis of one-line music programs](http://countercomplex.blogspot.com/2011/10/some-deep-analysis-of-one-line-music.html)
+(2011). Each is credited on the screen and in the file as the post credits it: viznut, Niklas Roy, miiro, stephth,
+Rrrola, droid, Mu6k, and "several people" for the Forty-Two Melody.
+
 ## Third-party material
 
 | What | Licence | Where |
