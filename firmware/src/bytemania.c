@@ -8,6 +8,7 @@
  *   GLO        the CC screen (and back)
  *   PRESETS    the formula
  *   KNOB1..4   the variables a..d (faster when turned fast); with HOME held, e..h
+ *   SEQ        tap (< 0.3 s): the loop on / off; held, the knobs are the loop: start, fine, length, mode
  *   SELECT     the glide
  *   OCT- OCT+  the octave
  *   MASTER     the volume (platform.c)
@@ -27,9 +28,11 @@
 #include "formulas.h"
 
 /* ---- the parameters: one table that the knobs, MIDI and (later) the CC mappings all write */
-enum { P_A, P_B, P_C, P_D, P_E, P_F, P_G, P_H, P_GLIDE, P_VOL, P_N };
+enum { P_A, P_B, P_C, P_D, P_E, P_F, P_G, P_H, P_GLIDE, P_VOL, P_LOOP, P_LSTART, P_LFINE, P_LLEN, P_N };
+enum { LOOP_OFF, LOOP_ON, LOOP_PING };
 static const struct { int32_t min, max; } PARAM[P_N] = {
     {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 10}, {0, 127},
+    {0, 2}, {0, 255}, {0, 255}, {0, 12},        /* the loop: mode, start (rows of 256), + fine, length 16 << n */
 };
 static volatile int32_t param[P_N];
 
@@ -60,16 +63,26 @@ static volatile uint32_t note_seq;              /* + 1 for a note from silence: 
 static volatile uint32_t dsp_us;                /* the last render's time */
 static volatile uint32_t t_now;                 /* where t is, for the views */
 
+static uint32_t loop_t(uint32_t pos, uint32_t mode, uint32_t start, uint32_t len)   /* len: a power of 2 */
+{
+    uint32_t off;
+    if (mode == LOOP_OFF || pos < start) return pos;
+    off = (pos - start) & (mode == LOOP_PING ? 2u * len - 1u : len - 1u);
+    return start + (off < len ? off : 2u * len - 1u - off);      /* ping: the second half runs back */
+}
+
 static void app_audio(int32_t *out, uint32_t n)
 {
-    static uint32_t t, frac, inc, seq;
+    static uint32_t pos, t, frac, inc, seq;     /* pos: steps since the note began; t: where the loop puts it */
     static int32_t amp, s;
     const bb_prog_t *p = prog_live;
     int32_t var[BB_VARS], g = gate;
     uint32_t i, t0 = fm1_ticks(), target = inc_target, glide = (uint32_t)param[P_GLIDE], bm = bend_mul, step;
     int32_t vol = param[P_VOL];
+    uint32_t lmode = (uint32_t)param[P_LOOP], lstart = (uint32_t)(param[P_LSTART] * 256 + param[P_LFINE]);
+    uint32_t llen = 16u << param[P_LLEN];
     prog_used = p;
-    if (seq != note_seq) { seq = note_seq; t = 0; frac = 0; inc = target; }
+    if (seq != note_seq) { seq = note_seq; pos = t = 0; frac = 0; inc = target; }
     if (!amp && !g) { dsp_us = 0; return; }     /* silent: costs nothing */
     for (i = 0; i < BB_VARS; i++) var[i] = param[P_A + i];
     step = (uint32_t)((uint64_t)inc * bm >> 16);
@@ -82,7 +95,8 @@ static void app_audio(int32_t *out, uint32_t n)
         }
         frac += step;
         if (frac >> 16) {                       /* t moved: a new sample, held until it moves again */
-            t += frac >> 16;
+            pos += frac >> 16;
+            t = loop_t(pos, lmode, lstart, llen);
             frac &= 0xFFFFu;
             s = ((bb_run(p, t, var) & 255) - 128) * 256;
         }
@@ -177,14 +191,20 @@ static uint32_t put_num(char *s, uint32_t i, uint32_t v)
     return i;
 }
 
-static void draw_vars(const int32_t *v, uint32_t bank)   /* a..d, or e..h (bank 4), 60 px each */
+enum { KNOBS_AD, KNOBS_EH, KNOBS_LOOP };        /* what the knobs turn: a..d, e..h (HOME held), the loop (SEQ held) */
+
+static void draw_knobs(uint32_t bank)           /* what the four knobs turn, 60 px each */
 {
+    static const char *const MODE[3] = {"OFF", "LOOP", "PING"};
     uint32_t i;
     cv_begin(240, 16, C_BLACK);
     for (i = 0; i < 4u; i++) {
-        char name[2] = {(char)('A' + bank + i), 0}, d[4];
+        char name[2] = {(char)(bank == KNOBS_LOOP ? "SFLM"[i] : (int)('A' + 4u * bank + i)), 0}, d[8];
         int32_t x = (int32_t)i * 60 + 10;
-        d[put_num(d, 0, (uint32_t)v[i])] = 0;
+        if (bank != KNOBS_LOOP) d[put_num(d, 0, (uint32_t)param[P_A + 4u * bank + i])] = 0;
+        else if (i == 3u) d[put(d, 0, MODE[param[P_LOOP]])] = 0;
+        else if (i == 2u && param[P_LLEN] >= 6) d[put(d, put_num(d, 0, 16u << param[P_LLEN] >> 10), "K")] = 0;
+        else d[put_num(d, 0, i == 2u ? 16u << param[P_LLEN] : (uint32_t)param[i ? P_LFINE : P_LSTART])] = 0;
         cv_text(x, 0, &FONT_S, name, bank ? C_ACC : C_OFF);
         cv_text(x + 16, 0, &FONT_S, d, C_WHITE);
     }
@@ -260,6 +280,7 @@ static void draw_status(uint32_t note, int32_t oct, uint32_t glide, uint32_t loa
 }
 
 /* ---- the panel */
+static const uint8_t LOOP_KNOB[4] = {P_LSTART, P_LFINE, P_LLEN, P_LOOP};
 static int32_t knob(uint32_t enc)               /* detents, 8x when turned fast */
 {
     static uint32_t last[7];
@@ -281,7 +302,7 @@ static void formula_pick(uint32_t f)
 #define NMAP 12u
 #define CC_OFF 128u
 typedef struct { uint8_t cc, target; int16_t min, max; } ccmap_t;
-static const char *const PNAME[P_N] = {"A", "B", "C", "D", "E", "F", "G", "H", "GLIDE", "VOL"};
+static const char *const PNAME[P_N] = {"A", "B", "C", "D", "E", "F", "G", "H", "GLIDE", "VOL", "LOOP", "START", "FINE", "LEN"};
 
 static void cc_in(const ccmap_t *map, uint32_t cc, uint32_t val)
 {
@@ -366,7 +387,8 @@ static void app_main(void)
     uint32_t f_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u, t_view = 0, view_t = ~0u, view_stale = 1, view_fresh = 1;
     int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[BB_VARS] = {0};
     uint8_t key_note[27] = {0};                 /* the note each key started */
-    uint32_t scr_cc = 0, sel = 0, learn = 0, scr_fresh = 1, learn_drawn = ~0u, bank_drawn = ~0u;   /* the CC screen: on, its slot, learning, to draw whole */
+    uint32_t scr_cc = 0, sel = 0, learn = 0, scr_fresh = 1, learn_drawn = ~0u, bank_drawn = ~0u;
+    uint32_t seq_turned = 0, seq_down = 0, loop_last = LOOP_ON;   /* SEQ: turned while held, when pressed; a tap's mode */   /* the CC screen: on, its slot, learning, to draw whole */
     settings_default(&set);
     if (settings_load(&set, sizeof set) || set.magic != 'C') settings_default(&set);
     for (k = 0; k < NMAP; k++) {
@@ -385,6 +407,7 @@ static void app_main(void)
     formula_pick(set.formula);
     param_set(P_GLIDE, set.glide);
     param_set(P_VOL, 127);
+    param_set(P_LLEN, 8);                       /* 4096 steps, half a second at middle C */
 
     for (;;) {
         uint32_t keys, down, up, rel, b, base = (uint32_t)(53 + 12 * set.oct), st_now, bank;
@@ -414,7 +437,7 @@ static void app_main(void)
         }
 
         b = fm1_input_edges(&rel);
-        bank = fm1_in.buttons >> BTN_HOME & 1u ? 4u : 0u;
+        bank = fm1_in.buttons >> BTN_SEQ & 1u ? KNOBS_LOOP : fm1_in.buttons >> BTN_HOME & 1u ? KNOBS_EH : KNOBS_AD;
         if (b & (1u << BTN_OCT_DOWN) && set.oct > -2) { set.oct--; dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_OCT_UP) && set.oct < 2) { set.oct++; dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_GLO)) { scr_cc ^= 1u; learn = 0; scr_fresh = 1; }
@@ -426,8 +449,16 @@ static void app_main(void)
                 set.formula = (uint8_t)(((int32_t)set.formula + n % (int32_t)NF + (int32_t)NF) % (int32_t)NF);
                 formula_pick(set.formula); dirty = 1; t_change = fm1_ms;
             }
-            for (k = 0; k < 4u; k++)            /* a..d, or e..h while HOME is held */
-                if ((n = knob(ENC_KNOB1 + k))) param_set(P_A + bank + k, param[P_A + bank + k] + n);
+            if (b & (1u << BTN_SEQ)) { seq_turned = 0; seq_down = fm1_ms; }
+            for (k = 0; k < 4u; k++) {
+                uint32_t id = bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k;
+                if (!(n = id == P_LOOP || id == P_LLEN ? fm1_enc_take(ENC_KNOB1 + k) : knob(ENC_KNOB1 + k))) continue;
+                param_set(id, param[id] + n);
+                if (bank == KNOBS_LOOP) seq_turned = 1;
+                if (id == P_LOOP && param[P_LOOP]) loop_last = (uint32_t)param[P_LOOP];
+            }
+            if (rel & (1u << BTN_SEQ) && !seq_turned && fm1_ms - seq_down < 300u)   /* a tap, not a hold */
+                param_set(P_LOOP, param[P_LOOP] ? LOOP_OFF : (int32_t)loop_last);
             if ((n = fm1_enc_take(ENC_SELECT))) {
                 param_set(P_GLIDE, param[P_GLIDE] + n);
                 set.glide = (uint8_t)param[P_GLIDE]; dirty = 1; t_change = fm1_ms;
@@ -478,7 +509,8 @@ static void app_main(void)
         fm1_led_key(BTN_SEL, set.pick);
         fm1_led_key(BTN_GLO, scr_cc);
         fm1_led_key(BTN_REC, learn);
-        fm1_led_key(BTN_HOME, bank != 0u);
+        fm1_led_key(BTN_HOME, bank == KNOBS_EH);
+        fm1_led_key(BTN_SEQ, param[P_LOOP] != LOOP_OFF);
         fm1_led_key(BTN_OCT_DOWN, set.oct < 0);
         fm1_led_key(BTN_OCT_UP, set.oct > 0);
 
@@ -502,13 +534,13 @@ static void app_main(void)
         for (k = 0; k < BB_VARS; k++)           /* any of a..h changed: the views show something else */
             if (param[P_A + k] != v_seen[k]) { v_seen[k] = param[P_A + k]; view_stale = view_fresh = 1; }
         if (!scr_cc) {                          /* the main screen */
-            for (k = 0; k < 4u; k++) v[k] = param[P_A + bank + k];
+            for (k = 0; k < 4u; k++) v[k] = param[bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k];
             st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load;
             if (set.formula != f_drawn) { f_drawn = set.formula; draw_formula(set.formula); view_stale = view_fresh = 1; }
             if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3] || bank != bank_drawn) {
                 for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
                 bank_drawn = bank;
-                draw_vars(v, bank);
+                draw_knobs(bank);
             }
             if (fm1_ms - t_view >= 40u && (t_now != view_t || view_stale)) {
                 t_view = fm1_ms;                /* 25 frames a second, while t moves or what it shows changed */
