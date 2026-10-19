@@ -39,8 +39,9 @@ The loop settings are also CC targets.
 
 ## User slots
 
-SAVE opens the save screen. Pick a slot with SELECT or PRESETS, press SAVE again to save, or HOME to cancel. A slot
-keeps the whole patch: the formula, `a`-`h`, the loop and glide. Saving waits until nothing is playing, since writing
+SAVE opens the save screen. Pick a slot with SELECT or PRESETS and press SAVE to name it: the keys type A-Z (the top
+key is a space) and OCT- deletes. SAVE again saves, HOME goes back. ENV twice clears the selected slot. A slot keeps
+the whole patch: the formula, `a`-`h`, the loop and glide. Saving waits until nothing is playing, since writing
 to flash briefly stops the sound.
 
 ## Editor
@@ -58,6 +59,7 @@ that compiled keeps playing.
 | OCT- / OCT+ | delete before / after the cursor |
 | PLAY | a held C4 to listen with, on or off |
 | ARP | replace the formula with a random one |
+| ENV | start from a blank patch: `t`, the variables at 0, no loop, no glide |
 | KNOB1-4 | the variables, as on the main screen |
 | SAVE | save to a user slot |
 | EDIT | back to the main screen |
@@ -131,7 +133,7 @@ Set `JIELI_TOOLCHAIN` and `AC79_SDK` if they live elsewhere.
 ## Build and run
 
 ```sh
-tests/run_tests.sh                                  # unit tests for the formula compiler
+tests/run_tests.sh                                  # unit tests: the formula compiler and the random formulas
 tests/run_host.sh                                   # runs bytemania.c on your computer -> build/host/ (WAV + screen PNGs)
 ./build.sh                                          # -> build/bytemania.fwsc
 python3 tools/fm1_install.py build/bytemania.fwsc   # install over USB

@@ -27,6 +27,10 @@
  *   OCT- OCT+  delete before / after the cursor
  *   PLAY       a C4 to hear it by, on / off
  *   ARP        a new random formula (randbeat.c) with values for its variables, to edit or save
+ *   ENV        a blank patch: t alone, the variables 0, no loop, no glide
+ *
+ * The save screen: SELECT or PRESETS picks a slot, SAVE goes on to name it (the keys type A..Z, the top one a
+ * space; OCT- deletes; SAVE saves), ENV twice clears it, HOME goes back.
  *   KNOB1..4   as on the main screen
  *
  * The formulas: bytebeat.c (compiled in the main loop, run in the audio interrupt). The views run the
@@ -174,6 +178,7 @@ static void note_off(uint32_t note)
 #define SLOTS_PER (SLOTS / LIB_SECTORS)
 #define TEXT_MAX 90u                            /* a formula: what the main screen's three lines show */
 #define USER 128u                               /* a patch number: 0..NF-1 built in, USER + k slot k, */
+#define BLANK 254u                              /* the blank one (INIT), */
 #define RANDOM 255u                             /* or one randbeat.c made */
 typedef struct {
     char name[12], text[TEXT_MAX + 2u];         /* both 0-terminated */
@@ -209,7 +214,10 @@ static void lib_init(void)
 }
 
 static int patch_ok(uint32_t p) { return p < NF || (p >= USER && p - USER < SLOTS && lib[p - USER].used); }
-static const char *patch_name(uint32_t p) { return p < USER ? FORMULA[p].name : p == RANDOM ? "RANDOM" : lib[p - USER].name; }
+static const char *patch_name(uint32_t p)
+{
+    return p < USER ? FORMULA[p].name : p == RANDOM ? "RANDOM" : p == BLANK ? "INIT" : lib[p - USER].name;
+}
 
 static void patch_pick(uint32_t p)
 {
@@ -246,10 +254,24 @@ static void patch_random(void)                  /* a new one, with its variables
     patch_seq++;
 }
 
+static void patch_blank(void)                   /* INIT: t alone, the variables 0, no loop, no glide */
+{
+    uint32_t i;
+    copy_str(work, "t", TEXT_MAX);
+    for (i = 0; i < BB_VARS; i++) param_set(P_A + i, 0);
+    param_set(P_LOOP, LOOP_OFF);
+    param_set(P_GLIDE, 0);
+    formula_load(work, 0);
+    cur = BLANK;
+    edited = 0;
+    work_err = 0;
+    patch_seq++;
+}
+
 static uint32_t patch_step(uint32_t p, int32_t n) /* n patches on: the built-ins, then the used slots, round */
 {
     uint32_t all = NF + SLOTS, i = p < USER ? p : NF + (p - USER);
-    if (p == RANDOM) i = n > 0 ? all - 1u : 0u;  /* (from a random one: on to the first, or back to the last) */
+    if (p >= BLANK) i = n > 0 ? all - 1u : 0u;  /* (from a made one: on to the first, or back to the last) */
     while (n) {
         i = n > 0 ? (i + 1u) % all : (i + all - 1u) % all;
         if (i < NF || lib[i - NF].used) n += n > 0 ? -1 : 1;
@@ -257,12 +279,10 @@ static uint32_t patch_step(uint32_t p, int32_t n) /* n patches on: the built-ins
     return i < NF ? i : USER + (i - NF);
 }
 
-static void patch_save(uint32_t k)              /* what plays now, into slot k, keeping its name */
+static void patch_save(uint32_t k, const char *name)   /* what plays now, into slot k, as name */
 {
     slot_t *s = &lib[k];
-    char name[sizeof s->name];
     uint32_t i;
-    copy_str(name, patch_name(cur), sizeof name - 1u);
     memset(s, 0, sizeof *s);
     copy_str(s->name, name, sizeof s->name - 1u);
     copy_str(s->text, work, TEXT_MAX);
@@ -274,6 +294,17 @@ static void patch_save(uint32_t k)              /* what plays now, into slot k, 
     cur = USER + k;
     edited = 0;
     patch_seq++;
+}
+
+static void patch_clear(uint32_t k)             /* slot k empty; if it plays, it plays on as an unsaved edit */
+{
+    if (cur == USER + k) {
+        cur = BLANK;
+        edited = 1;
+        patch_seq++;
+    }
+    memset(&lib[k], 0, sizeof lib[k]);
+    lib_dirty |= 1u << (k / SLOTS_PER);
 }
 
 /* ---- editing work: the keys' tokens go in at the cursor; each change compiles */
@@ -336,12 +367,13 @@ static void draw_patch(void)                    /* number and name, author, the 
     uint32_t n, y;
     n = 0;
     if (cur < USER) { s[0] = (char)('0' + (cur + 1u) / 10u); s[1] = (char)('0' + (cur + 1u) % 10u); n = 2; }
-    else if (cur != RANDOM) { s[0] = 'U'; s[1] = (char)('0' + (cur - USER + 1u) / 10u); s[2] = (char)('0' + (cur - USER + 1u) % 10u); n = 3; }
+    else if (cur < BLANK) { s[0] = 'U'; s[1] = (char)('0' + (cur - USER + 1u) / 10u); s[2] = (char)('0' + (cur - USER + 1u) % 10u); n = 3; }
     if (n) s[n++] = ' ';
     copy_str(s + n, patch_name(cur), edited ? 10 : 11);
     if (edited) { n = text_len(s); s[n++] = '*'; s[n] = 0; }   /* changed in the editor, not saved */
     draw_text_box(0, 4, 240, &FONT_L, s, C_ACC, 1);
-    draw_text_box(0, 38, 240, &FONT_S, cur < USER ? FORMULA[cur].by : cur == RANDOM ? "made at random" : "your patch", C_OFF, 1);
+    draw_text_box(0, 38, 240, &FONT_S, cur < USER ? FORMULA[cur].by : cur == RANDOM ? "made at random" : cur == BLANK ? "a blank start" : "your patch",
+                  C_OFF, 1);
     cv_begin(240, 48, C_BLACK);
     for (y = 0; *p && y < 48u; y += 16u) {
         for (n = 0; *p && n < 30u; n++) s[n] = *p++;
@@ -535,15 +567,25 @@ static void draw_cc_rows(const ccmap_t *map, uint32_t sel, int learn)
     }
 }
 
-static void draw_save_rows(uint32_t sel)        /* the 12 slots around sel */
+static void draw_save_rows(uint32_t sel, int clearing)   /* the 12 slots around sel; clearing: sel asks first */
 {
     uint32_t r, top = sel < 6u ? 0u : sel - 6u > SLOTS - 12u ? SLOTS - 12u : sel - 6u;
     for (r = 0; r < 12u; r++) {
         uint32_t k = top + r;
-        char s[20] = {'U', (char)('0' + (k + 1u) / 10u), (char)('0' + (k + 1u) % 10u), ' '};
-        copy_str(s + 4, lib[k].used ? lib[k].name : "-", 11);
-        draw_row(r, s, k == sel ? ROW_SEL : lib[k].used ? ROW_PLAIN : ROW_DIM);
+        char s[32] = {'U', (char)('0' + (k + 1u) / 10u), (char)('0' + (k + 1u) % 10u), ' '};
+        if (k == sel && clearing) copy_str(s + 4, "CLEAR? ENV AGAIN", 20);
+        else copy_str(s + 4, lib[k].used ? lib[k].name : "-", 11);
+        draw_row(r, s, k == sel ? (clearing ? ROW_HOT : ROW_SEL) : lib[k].used ? ROW_PLAIN : ROW_DIM);
     }
+}
+
+static void draw_name(const char *name)         /* the name screen: the name as it is typed, big, a cursor after it */
+{
+    uint32_t n = text_len(name);
+    cv_begin(240, 40, C_BLACK);
+    cv_text(8, 4, &FONT_L, name, C_WHITE);
+    cv_rect(8 + (int32_t)n * 16, 4, 3, 32, C_ACC);
+    cv_blit(0, 80);
 }
 
 /* ---- the editor's screen: the formula with the cursor, whether it compiles, the keys' tokens, the knobs, help */
@@ -610,7 +652,7 @@ static void draw_palette(uint32_t layer)        /* the keys as a keyboard, each 
 static void draw_edit_help(void)
 {
     draw_text_box(0, 200, 240, &FONT_S, "FX MORE OCT-/+ DEL ARP RANDOM", C_OFF, 1);
-    draw_text_box(0, 220, 240, &FONT_S, "PLAY NOTE   SAVE   EDIT DONE", C_OFF, 1);
+    draw_text_box(0, 220, 240, &FONT_S, "PLAY NOTE  ENV INIT  EDIT DONE", C_OFF, 1);
 }
 
 /* ---- the settings: what survives a power-off */
@@ -647,11 +689,13 @@ static void settings_check(settings_t *s)       /* what a power-off or another v
 }
 
 /* ---- the panel and the screens */
-enum { SCR_MAIN, SCR_CC, SCR_SAVE, SCR_EDIT };
+enum { SCR_MAIN, SCR_CC, SCR_SAVE, SCR_EDIT, SCR_NAME };
 static settings_t set;
 static uint32_t dirty, t_change;                /* the settings changed, when (saved 2 s later, when silent) */
 static uint32_t scr = SCR_MAIN, scr_fresh = 1;  /* the screen showing; to draw whole */
 static uint32_t cc_sel, learn, save_sel;        /* the CC screen's slot, learning; the save screen's slot */
+static uint32_t clearing;                       /* the save screen asks before it clears save_sel */
+static char name[12];                           /* the name screen's name */
 static uint32_t audition;                       /* the editor's C4 sounds */
 static uint32_t bank, seq_turned, seq_down, loop_last = LOOP_ON;   /* the knobs' bank; SEQ: turned while held, when
                                                                        pressed (a tap, or a hold); the mode a tap turns on */
@@ -662,7 +706,7 @@ static void screen(uint32_t s)
 {
     if (audition && s != SCR_EDIT) { audition = 0; note_off(60); }
     scr = s;
-    learn = 0;
+    learn = clearing = 0;
     scr_fresh = 1;
 }
 
@@ -755,27 +799,47 @@ static void edit_input(uint32_t b, uint32_t rel, uint32_t keys_down)
         audition ^= 1u;
         if (audition) note_on(60, 100); else note_off(60);
     }
-    if (b & (1u << BTN_ARP)) { patch_random(); cpos = text_len(work); }   /* (not kept in the settings: a power-off
-                                                                              goes back to the last patch picked) */
+    if (b & (1u << BTN_ARP)) { patch_random(); cpos = text_len(work); }   /* (random and blank are not kept in the */
+    if (b & (1u << BTN_ENV)) { patch_blank(); cpos = text_len(work); }    /* settings: a power-off goes back to the
+                                                                              last patch picked) */
     knobs_input(b, rel);
     if (b & (1u << BTN_SAVE)) save_open();
     else if (b & (1u << BTN_EDIT)) screen(SCR_MAIN);
 }
 
-static void save_input(uint32_t b)
+static void save_input(uint32_t b)              /* pick a slot: SAVE names it, ENV twice clears it, HOME goes back */
 {
     int32_t n = fm1_enc_take(ENC_SELECT) + fm1_enc_take(ENC_PRESETS), c;
     if (n) {
         c = (int32_t)save_sel + n;
         save_sel = c < 0 ? 0u : c >= (int32_t)SLOTS ? SLOTS - 1u : (uint32_t)c;
+        clearing = 0;
     }
+    if (b & (1u << BTN_ENV) && lib[save_sel].used) {
+        if (clearing) { patch_clear(save_sel); clearing = 0; }
+        else clearing = 1;
+    }
+    if (b & (1u << BTN_SAVE)) {                 /* to the name screen, with the name it plays under */
+        copy_str(name, patch_name(cur), sizeof name - 1u);
+        screen(SCR_NAME);
+    } else if (b & (1u << BTN_HOME))
+        screen(SCR_MAIN);
+}
+
+static void name_input(uint32_t b, uint32_t keys_down)   /* the keys type A..Z and a space; OCT- deletes */
+{
+    uint32_t k, n = text_len(name);
+    for (k = 0; k < 27u; k++)
+        if (keys_down >> k & 1u && n < sizeof name - 1u) { name[n++] = k < 26u ? (char)('A' + k) : ' '; name[n] = 0; }
+    if (b & (1u << BTN_OCT_DOWN) && n) name[--n] = 0;
     if (b & (1u << BTN_SAVE)) {
-        patch_save(save_sel);
+        if (!n) copy_str(name, "NO NAME", sizeof name - 1u);
+        patch_save(save_sel, name);
         set.patch = (uint8_t)cur;
         changed();
         screen(SCR_MAIN);
     } else if (b & (1u << BTN_HOME))
-        screen(SCR_MAIN);
+        screen(SCR_SAVE);
 }
 
 static void app_main(void)
@@ -784,7 +848,7 @@ static void app_main(void)
     uint32_t p_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u, head_drawn = ~0u, bank_drawn = ~0u;
     uint32_t t_view = 0, view_t = ~0u, view_shown = ~0u, view_fresh = 1;
     uint32_t cpos_drawn = ~0u, layer_drawn = ~0u;   /* the editor's */
-    char text_drawn[TEXT_MAX + 1u] = {0};
+    char text_drawn[TEXT_MAX + 1u] = {0}, name_drawn[sizeof name];   /* (name_drawn: set apart on each screen) */
     int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[BB_VARS] = {0};
     uint8_t key_note[27] = {0};                 /* the note each key started */
     lib_init();
@@ -813,7 +877,7 @@ static void app_main(void)
                 note_off(key_note[k]);
                 midi_send(0x80, key_note[k], 0);
             }
-            if (!(down >> k & 1u) || scr == SCR_EDIT) continue;   /* (the editor types with them) */
+            if (!(down >> k & 1u) || scr == SCR_EDIT || scr == SCR_NAME) continue;   /* (those type with them) */
             if (set.pick) {
                 if (k < NF) pick(k);
                 continue;
@@ -826,7 +890,7 @@ static void app_main(void)
 
         b = fm1_input_edges(&rel);
         bank = fm1_in.buttons >> BTN_SEQ & 1u ? KNOBS_LOOP : fm1_in.buttons >> BTN_HOME & 1u ? KNOBS_EH : KNOBS_AD;
-        if (scr != SCR_EDIT) {                  /* (the editor deletes with them) */
+        if (scr != SCR_EDIT && scr != SCR_NAME) {   /* (those delete with them) */
             if (b & (1u << BTN_OCT_DOWN) && set.oct > -2) { set.oct--; changed(); }
             if (b & (1u << BTN_OCT_UP) && set.oct < 2) { set.oct++; changed(); }
         }
@@ -834,6 +898,7 @@ static void app_main(void)
         else if (scr == SCR_MAIN) main_input(b, rel);
         else if (scr == SCR_CC) cc_input(b);
         else if (scr == SCR_EDIT) edit_input(b, rel, down);
+        else if (scr == SCR_NAME) name_input(b, down);
         else save_input(b);
 
         while (midi_get(&st, &d1, &d2)) {       /* USB-MIDI in, any channel */
@@ -850,7 +915,8 @@ static void app_main(void)
             fm1_led_key(KEY_LED(k), scr == SCR_EDIT ? keys >> k & 1u : set.pick ? k == cur : gate && cur_note == base + k);
         fm1_led_key(BTN_SEL, set.pick);
         fm1_led_key(BTN_GLO, scr == SCR_CC);
-        fm1_led_key(BTN_SAVE, scr == SCR_SAVE);
+        fm1_led_key(BTN_SAVE, scr == SCR_SAVE || scr == SCR_NAME);
+        fm1_led_key(BTN_ENV, clearing);
         fm1_led_key(BTN_EDIT, scr == SCR_EDIT);
         fm1_led_key(BTN_PLAY, audition);
         fm1_led_key(BTN_FX, scr == SCR_EDIT && fm1_in.buttons >> BTN_FX & 1u);
@@ -870,6 +936,7 @@ static void app_main(void)
             p_drawn = note_drawn = status_drawn = head_drawn = view_shown = cpos_drawn = layer_drawn = ~0u;
             for (k = 0; k < 4u; k++) v_drawn[k] = -1;
             memset(rows_drawn, 0, sizeof rows_drawn);
+            memset(name_drawn, 0xFF, sizeof name_drawn);   /* (no name looks like that: drawn whatever it is) */
         }
         for (k = 0; k < BB_VARS; k++)           /* any of a..h changed: the views show something else */
             if (param[P_A + k] != v_seen[k]) { v_seen[k] = param[P_A + k]; view_fresh = 1; view_t = ~0u; }
@@ -880,8 +947,15 @@ static void app_main(void)
             }
             draw_cc_rows(set.map, cc_sel, (int)learn);
         } else if (scr == SCR_SAVE) {
-            if (head_drawn) { head_drawn = 0; draw_head("SAVE TO", C_ACC, "SAVE: OK    HOME: CANCEL"); }
-            draw_save_rows(save_sel);
+            if (head_drawn) { head_drawn = 0; draw_head("SAVE TO", C_ACC, "SAVE NAME ENV CLEAR HOME BACK"); }
+            draw_save_rows(save_sel, (int)clearing);
+        } else if (scr == SCR_NAME) {
+            if (head_drawn) {
+                head_drawn = 0;
+                draw_head("NAME", C_ACC, "THE KEYS TYPE A-Z, TOP: SPACE");
+                draw_text_box(0, 220, 240, &FONT_S, "OCT- DEL  SAVE OK  HOME BACK", C_OFF, 1);
+            }
+            if (memcmp(name, name_drawn, sizeof name)) { memcpy(name_drawn, name, sizeof name); draw_name(name); }
         } else if (scr == SCR_EDIT) {
             uint32_t layer = fm1_in.buttons >> BTN_FX & 1u;
             if (head_drawn || patch_seq != p_drawn) {   /* (the patch changes here with ARP) */
