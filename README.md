@@ -13,7 +13,8 @@ A bytebeat synth: a one-line formula of `t` makes an 8-bit sample each step of `
 | SEL | switch the keys between playing and picking formulas |
 | FX | switch the view: scope (the waveform) or raster (a row per 256 steps of `t`, coloured by value) |
 | GLO | open or close the CC screen |
-| PRESETS | the formula |
+| PRESETS | the patch: the built-in formulas, then your saved slots |
+| SAVE | save what plays to one of 64 user slots |
 | KNOB1-4 | the variables `a`-`d` (0-255, faster when turned fast). Hold HOME for `e`-`h` |
 | SEQ | tap to switch the loop on or off. Hold it and the knobs set the loop (below) |
 | SELECT | glide (0-10) |
@@ -34,6 +35,12 @@ Hold SEQ and the knobs set the loop:
 
 A note plays from `t = 0` until it reaches the start, then loops. A quick tap on SEQ switches the loop on or off.
 The loop settings are also CC targets.
+
+## User slots
+
+SAVE opens the save screen. Pick a slot with SELECT or PRESETS, press SAVE again to save, or HOME to cancel. A slot
+keeps the whole patch: the formula, `a`-`h`, the loop and glide. Saving waits until nothing is playing, since writing
+to flash briefly stops the sound.
 
 ## CC mapping
 
