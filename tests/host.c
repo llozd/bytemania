@@ -29,7 +29,15 @@ static volatile uint32_t fm1_ms;
 static uint32_t fm1_ticks(void) { return 0; }   /* (no clock: the DSP load shows 0) */
 static struct { uint32_t notes, buttons; } fm1_in;
 static uint32_t host_edges;
-static uint32_t fm1_input_edges(uint32_t *released) { uint32_t b = host_edges; host_edges = 0; *released = 0; return b; }
+static uint32_t fm1_input_edges(uint32_t *released)   /* the script's edges, and those of the buttons it holds */
+{
+    static uint32_t last;
+    uint32_t b = host_edges | (fm1_in.buttons & ~last);
+    *released = last & ~fm1_in.buttons;
+    last = fm1_in.buttons;
+    host_edges = 0;
+    return b;
+}
 static uint32_t fm1_input_note_edges(void) { return 0; }   /* (the script sets fm1_in.notes) */
 static int32_t host_enc[7];
 static int32_t fm1_enc_take(uint32_t e) { int32_t n = host_enc[e]; host_enc[e] = 0; return n; }
