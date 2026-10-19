@@ -4,6 +4,7 @@
  *
  *   keys       play the note (mono, the last key wins); with SEL lit, pick a formula instead
  *   SEL        the keys: play / pick a formula
+ *   FX         the view: scope / raster
  *   PRESETS    the formula
  *   KNOB1..4   the variables a..d (faster when turned fast)
  *   SELECT     the glide
@@ -11,7 +12,8 @@
  *   MASTER     the volume (platform.c)
  *   USB-MIDI   notes in play, with their velocity
  *
- * The formulas: bytebeat.c (compiled in the main loop, run in the audio interrupt).
+ * The formulas: bytebeat.c (compiled in the main loop, run in the audio interrupt). The views run the
+ * formula again in the main loop, at the t the interrupt has reached.
  * What platform.c offers: docs/API.md. The chip's rules: docs/RULES.md. */
 #define APP_NAME "BYTEMANIA"                    /* the rescue and the crash screen say this */
 #include "platform.c"
@@ -49,6 +51,7 @@ static volatile uint32_t inc_target;            /* t steps per frame, Q16 */
 static volatile int32_t gate;                   /* target level, Q15: 0 = released */
 static volatile uint32_t note_seq;              /* + 1 for a note from silence: t starts over, no glide */
 static volatile uint32_t dsp_us;                /* the last render's time */
+static volatile uint32_t t_now;                 /* where t is, for the views */
 
 static void app_audio(int32_t *out, uint32_t n)
 {
@@ -79,6 +82,7 @@ static void app_audio(int32_t *out, uint32_t n)
         out[2u * i] += v;                       /* L */
         out[2u * i + 1u] += v;                  /* R */
     }
+    t_now = t;
     dsp_us = (fm1_ticks() - t0) / FM1_TICKS_PER_US;
 }
 
@@ -137,29 +141,15 @@ static void draw_formula(uint32_t f)            /* number and name, author, the 
     s[2] = ' ';
     while (FORMULA[f].name[n] && n < 12u) { s[3u + n] = FORMULA[f].name[n]; n++; }
     s[3u + n] = 0;
-    draw_text_box(0, 6, 240, &FONT_L, s, C_ACC, 1);
-    draw_text_box(0, 42, 240, &FONT_S, FORMULA[f].by, C_OFF, 1);
-    cv_begin(240, 64, C_BLACK);
-    for (y = 0; *p && y < 64u; y += 16u) {
+    draw_text_box(0, 4, 240, &FONT_L, s, C_ACC, 1);
+    draw_text_box(0, 38, 240, &FONT_S, FORMULA[f].by, C_OFF, 1);
+    cv_begin(240, 48, C_BLACK);
+    for (y = 0; *p && y < 48u; y += 16u) {
         for (n = 0; *p && n < 30u; n++) s[n] = *p++;
         s[n] = 0;
         cv_text((240 - text_w(&FONT_S, s)) / 2, (int32_t)y, &FONT_S, s, C_WHITE);
     }
-    cv_blit(0, 68);
-}
-
-static void draw_vars(const int32_t *v)         /* a..d, 60 px each */
-{
-    uint32_t i;
-    cv_begin(240, 52, C_BLACK);
-    for (i = 0; i < 4u; i++) {
-        char name[2] = {(char)('A' + i), 0}, d[4];
-        int32_t x = (int32_t)i * 60, k = v[i];
-        d[0] = (char)('0' + k / 100); d[1] = (char)('0' + k / 10 % 10); d[2] = (char)('0' + k % 10); d[3] = 0;
-        cv_text(x + 26, 0, &FONT_S, name, C_OFF);
-        cv_text(x + 6, 18, &FONT_L, d, C_WHITE);
-    }
-    cv_blit(0, 140);
+    cv_blit(0, 56);
 }
 
 static uint32_t put(char *s, uint32_t i, const char *p) { while (*p) s[i++] = *p++; return i; }
@@ -169,6 +159,68 @@ static uint32_t put_num(char *s, uint32_t i, uint32_t v)
     if (v >= 10u) s[i++] = (char)('0' + v / 10u % 10u);
     s[i++] = (char)('0' + v % 10u);
     return i;
+}
+
+static void draw_vars(const int32_t *v)         /* a..d, 60 px each */
+{
+    uint32_t i;
+    cv_begin(240, 16, C_BLACK);
+    for (i = 0; i < 4u; i++) {
+        char name[2] = {(char)('A' + i), 0}, d[4];
+        int32_t x = (int32_t)i * 60 + 10;
+        d[put_num(d, 0, (uint32_t)v[i])] = 0;
+        cv_text(x, 0, &FONT_S, name, C_OFF);
+        cv_text(x + 16, 0, &FONT_S, d, C_WHITE);
+    }
+    cv_blit(0, 178);
+}
+
+/* ---- the views: the formula run again here, 240 x 64 */
+enum { VIEW_SCOPE, VIEW_RASTER, VIEWS };
+static uint16_t shade[256];                     /* sample value -> colour: black, lilac, white */
+
+static void shade_init(void)
+{
+    uint32_t v;
+    for (v = 0; v < 256u; v++) {
+        uint32_t a = v < 128u ? v * 2u : 255u, w = v < 128u ? 0u : (v - 128u) * 2u;
+        shade[v] = RGB(180u * a / 255u + 75u * w / 255u, 140u * a / 255u + 115u * w / 255u, 255u * a / 255u);
+    }
+}
+
+static uint8_t rast[64][240] __attribute__((section(".pool")));   /* the raster's rows, kept: a row of t is done once */
+static uint32_t rast_row[64];                   /* the row of t each holds (row + 1, 0 = none) */
+
+static void draw_view(uint32_t view, int fresh) /* fresh: the formula or a variable changed, the kept rows are old */
+{
+    const bb_prog_t *p = prog_live;
+    int32_t var[BB_VARS];
+    uint32_t i, x, t = t_now;
+    for (i = 0; i < BB_VARS; i++) var[i] = param[P_A + i];
+    cv_begin(240, 64, C_BLACK);
+    if (view == VIEW_SCOPE) {                   /* the last 240 samples */
+        int32_t y0 = 0, y;
+        for (x = 0; x < 240u; x++, y0 = y) {
+            y = 63 - ((bb_run(p, t - 239u + x, var) & 255) >> 2);
+            if (x) cv_line((int32_t)x - 1, y0, (int32_t)x, y, C_ACC);
+        }
+    } else {                                    /* a row per 256 steps of t, the newest at the bottom */
+        uint32_t row0 = (t >> 8) - 63u, r;
+        if (fresh) for (r = 0; r < 64u; r++) rast_row[r] = 0;
+        for (r = 0; r < 64u; r++) {
+            uint32_t row = row0 + r, k = row & 63u;
+            if (row > t >> 8) continue;         /* before t = 0 (row0 wrapped) */
+            if (rast_row[k] != row + 1u) {      /* the row now still fills: computed again next time */
+                for (x = 0; x < 240u; x++) {
+                    uint32_t tt = row << 8 | (x + x / 15u);   /* 240 px over 256 steps */
+                    rast[k][x] = tt <= t ? (uint8_t)bb_run(p, tt, var) : 0;
+                }
+                rast_row[k] = row < t >> 8 ? row + 1u : 0u;
+            }
+            for (x = 0; x < 240u; x++) cv_pset((int32_t)x, (int32_t)r, shade[rast[k][x]]);
+        }
+    }
+    cv_blit(0, 108);
 }
 
 static void draw_status(uint32_t note, int32_t oct, uint32_t glide, uint32_t load, int pick)
@@ -209,21 +261,23 @@ static void formula_pick(uint32_t f)
     for (i = 0; i < BB_VARS; i++) param_set(P_A + i, i < 4u ? FORMULA[f].def[i] : 0);
 }
 
-typedef struct { uint8_t magic, formula, glide, pick; int8_t oct; } settings_t;   /* what survives a power-off */
-static const settings_t SET0 = {'B', 2, 0, 0, 0};
+typedef struct { uint8_t magic, formula, glide, pick, view; int8_t oct; } settings_t;   /* what survives a power-off */
+static const settings_t SET0 = {'B', 2, 0, 0, VIEW_SCOPE, 0};
 
 static void app_main(void)
 {
     settings_t set = SET0;
     uint32_t prev = 0, sounding = 0, k, t_change = 0, dirty = 0, t_load = 0, load = 0;
-    uint32_t f_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u;
-    int32_t v_drawn[4] = {-1, -1, -1, -1};
+    uint32_t f_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u, t_view = 0, view_t = ~0u, view_stale = 1, view_fresh = 1;
+    int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[BB_VARS] = {0};
     uint8_t key_note[27] = {0};                 /* the note each key started */
     if (settings_load(&set, sizeof set) || set.magic != SET0.magic) set = SET0;
     if (set.formula >= NF) set.formula = 0;
     if (set.glide > 10u) set.glide = 0;
     if (set.oct < -2 || set.oct > 2) set.oct = 0;
     set.pick = !!set.pick;
+    if (set.view >= VIEWS) set.view = VIEW_SCOPE;
+    shade_init();
     formula_pick(set.formula);
     param_set(P_GLIDE, set.glide);
 
@@ -260,6 +314,7 @@ static void app_main(void)
         if (b & (1u << BTN_OCT_DOWN) && set.oct > -2) { set.oct--; dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_OCT_UP) && set.oct < 2) { set.oct++; dirty = 1; t_change = fm1_ms; }
         if (b & (1u << BTN_SEL)) { set.pick ^= 1u; dirty = 1; t_change = fm1_ms; }
+        if (b & (1u << BTN_FX)) { set.view = (uint8_t)((set.view + 1u) % VIEWS); view_stale = 1; dirty = 1; t_change = fm1_ms; }
 
         if ((n = fm1_enc_take(ENC_PRESETS))) {
             set.formula = (uint8_t)(((int32_t)set.formula + n % (int32_t)NF + (int32_t)NF) % (int32_t)NF);
@@ -289,10 +344,18 @@ static void app_main(void)
         }
         for (k = 0; k < 4u; k++) v[k] = param[P_A + k];
         st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load;
-        if (set.formula != f_drawn) { f_drawn = set.formula; draw_formula(set.formula); }
+        if (set.formula != f_drawn) { f_drawn = set.formula; draw_formula(set.formula); view_stale = view_fresh = 1; }
         if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3]) {
             for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
             draw_vars(v);
+        }
+        for (k = 0; k < BB_VARS; k++)           /* any of a..h changed: the views show something else */
+            if (param[P_A + k] != v_seen[k]) { v_seen[k] = param[P_A + k]; view_stale = view_fresh = 1; }
+        if (fm1_ms - t_view >= 40u && (t_now != view_t || view_stale)) {
+            t_view = fm1_ms;                    /* 25 frames a second, while t moves or what it shows changed */
+            view_t = t_now;
+            draw_view(set.view, (int)view_fresh);
+            view_stale = view_fresh = 0;
         }
         if (cur_note != note_drawn || st_now != status_drawn) {
             note_drawn = cur_note; status_drawn = st_now;

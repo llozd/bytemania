@@ -11,6 +11,7 @@ A bytebeat synth: a one-line formula of `t` makes an 8-bit sample each step of `
 | --- | --- |
 | Keys | play (mono, last note wins). With SEL lit, each key picks a formula instead |
 | SEL | switch the keys between playing and picking formulas |
+| FX | switch the view: scope (the waveform) or raster (a row per 256 steps of `t`, coloured by value) |
 | PRESETS | the formula |
 | KNOB1-4 | the variables `a`-`d` (0-255, faster when turned fast) |
 | SELECT | glide (0-10) |
