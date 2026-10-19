@@ -1049,7 +1049,7 @@ static void app_main(void)
         if (scr == SCR_CC) {
             if (learn != head_drawn) {
                 head_drawn = learn;
-                if (learn) draw_head("LEARN", 0, 0, " move a control on your MIDI gear");
+                if (learn) draw_head("LEARN", 0, 0, " move a control to map it");
                 else draw_head("CC MAP", "REC", "learn", " #  CC TO    MIN-MAX NOW");
             }
             draw_cc_rows(set.map, cc_sel, (int)learn);
