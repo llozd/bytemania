@@ -6,18 +6,27 @@
  *   SEL        the keys: play / pick a formula
  *   FX         the view: scope / raster
  *   GLO        the CC screen (and back)
- *   PRESETS    the formula
+ *   EDIT       the editor (and back)
+ *   SAVE       the save screen: what plays, into one of 64 user slots
+ *   PRESETS    the patch: the built-in formulas, then the used slots
  *   KNOB1..4   the variables a..d (faster when turned fast); with HOME held, e..h
  *   SEQ        tap (< 0.3 s): the loop on / off; held, the knobs are the loop: start, fine, length, mode
  *   SELECT     the glide
  *   OCT- OCT+  the octave
  *   MASTER     the volume (platform.c)
+ *   USB-MIDI   notes in play, with their velocity; pitch bend +-2 semitones
  *
  * The CC screen: 12 slots, each a CC that moves a parameter (a..h, glide, volume) between min and max.
  *   SELECT     the slot
  *   KNOB1..4   its CC (or off), its parameter, min, max (min > max turns it around)
  *   REC        learn: the next CC that comes in is the slot's
- *   USB-MIDI   notes in play, with their velocity; pitch bend +-2 semitones
+ *
+ * The editor: the keys type the formula (the screen shows which key types what), compiled as it changes.
+ *   FX         held: the second layer of the keys
+ *   SELECT     the cursor
+ *   OCT- OCT+  delete before / after the cursor
+ *   PLAY       a C4 to hear it by, on / off
+ *   KNOB1..4   as on the main screen
  *
  * The formulas: bytebeat.c (compiled in the main loop, run in the audio interrupt). The views run the
  * formula again in the main loop, at the t the interrupt has reached.
@@ -171,6 +180,9 @@ static slot_t lib[SLOTS] __attribute__((section(".pool")));
 static uint32_t lib_dirty;                      /* bit k: sector k to save, when nothing sounds */
 static uint32_t cur = 2;                        /* the patch playing */
 static char work[TEXT_MAX + 1u];                /* its formula */
+static uint32_t edited;                         /* work is not the patch's own formula any more */
+static const char *work_err;                    /* work does not compile (the last that did plays), and where */
+static uint32_t work_err_at;
 
 static void copy_str(char *d, const char *s, uint32_t max)   /* at most max characters, 0-terminated */
 {
@@ -210,6 +222,8 @@ static void patch_pick(uint32_t p)
     }
     formula_load(work, 0);
     cur = p;
+    edited = 0;
+    work_err = 0;
 }
 
 static uint32_t patch_step(uint32_t p, int32_t n) /* n patches on: the built-ins, then the used slots, round */
@@ -237,6 +251,56 @@ static void patch_save(uint32_t k)              /* what plays now, into slot k, 
     s->used = 1;
     lib_dirty |= 1u << (k / SLOTS_PER);
     cur = USER + k;
+    edited = 0;
+}
+
+/* ---- editing work: the keys' tokens go in at the cursor; each change compiles */
+static uint32_t cpos;                           /* the cursor: before work[cpos] */
+
+static uint32_t text_len(const char *s) { uint32_t n = 0; while (s[n]) n++; return n; }
+
+static void work_changed(void)
+{
+    work_err = formula_load(work, &work_err_at);
+    edited = 1;
+}
+
+static void work_insert(const char *tok)
+{
+    uint32_t len = text_len(work), n = text_len(tok), i;
+    if (!n || len + n > TEXT_MAX) return;
+    for (i = len + 1u; i-- > cpos; ) work[i + n] = work[i];    /* (the 0 too) */
+    for (i = 0; i < n; i++) work[cpos + i] = tok[i];
+    cpos += n;
+    work_changed();
+}
+
+static void work_delete(uint32_t at)            /* the character at work[at] */
+{
+    uint32_t len = text_len(work), i;
+    if (at >= len) return;
+    for (i = at; i < len; i++) work[i] = work[i + 1u];
+    if (cpos > at) cpos--;
+    work_changed();
+}
+
+/* the keys' tokens: white keys and black keys, the second layer with FX held ("" = none) */
+static const char *const TOK_WHITE[2][16] = {
+    {"t", "a", "b", "c", "d", "e", "f", "g", "h", "(", ")", "+", "-", "*", "&", "|"},
+    {"/", "%", "~", "!", "<", ">", "?", ":", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||"},
+};
+static const char *const TOK_BLACK[2][11] = {
+    {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "^"},
+    {"0x", "A", "B", "C", "D", "E", "F", " ", "", "", ""},
+};
+
+static int key_black(uint32_t k) { return (0x54Au >> ((53u + k) % 12u)) & 1u; }   /* key 0 = F3 */
+
+static const char *key_token(uint32_t k, uint32_t layer)
+{
+    uint32_t i, w = 0, b = 0;
+    for (i = 0; i < k; i++) { if (key_black(i)) b++; else w++; }
+    return key_black(k) ? TOK_BLACK[layer][b] : TOK_WHITE[layer][w];
 }
 
 /* ---- the screen */
@@ -251,7 +315,8 @@ static void draw_patch(void)                    /* number and name, author, the 
     if (cur < USER) { s[0] = (char)('0' + (cur + 1u) / 10u); s[1] = (char)('0' + (cur + 1u) % 10u); n = 2; }
     else { s[0] = 'U'; s[1] = (char)('0' + (cur - USER + 1u) / 10u); s[2] = (char)('0' + (cur - USER + 1u) % 10u); n = 3; }
     s[n++] = ' ';
-    copy_str(s + n, patch_name(cur), 11);
+    copy_str(s + n, patch_name(cur), edited ? 10 : 11);
+    if (edited) { n = text_len(s); s[n++] = '*'; s[n] = 0; }   /* changed in the editor, not saved */
     draw_text_box(0, 4, 240, &FONT_L, s, C_ACC, 1);
     draw_text_box(0, 38, 240, &FONT_S, cur < USER ? FORMULA[cur].by : "your patch", C_OFF, 1);
     cv_begin(240, 48, C_BLACK);
@@ -458,6 +523,73 @@ static void draw_save_rows(uint32_t sel)        /* the 12 slots around sel */
     }
 }
 
+/* ---- the editor's screen: the formula with the cursor, whether it compiles, the keys' tokens, the knobs, help */
+#define C_ERR RGB(255, 90, 90)
+
+static void draw_edit_text(void)                /* 30 characters a line from the left, 4 lines from y = 24 */
+{
+    uint32_t i, len = text_len(work);
+    cv_begin(240, 64, C_BLACK);
+    for (i = 0; i <= len && i < 120u; i++) {
+        int32_t x = (int32_t)(i % 30u) * 8, y = (int32_t)(i / 30u) * 16;
+        if (i < len) { char c[2] = {work[i], 0}; cv_text(x, y, &FONT_S, c, C_WHITE); }
+        if (work_err && i == (work_err_at < len ? work_err_at : len)) cv_rect(x, y + 14, 8, 2, C_ERR);
+        if (i == cpos) cv_rect(x, y, 2, 16, C_ACC);
+    }
+    cv_blit(0, 24);
+}
+
+static void draw_edit_status(void)
+{
+    char s[40];
+    uint32_t i = 0;
+    if (work_err) {                             /* (the longest, "unexpected character at 90", fits the line) */
+        i = put(s, 0, work_err);
+        i = put(s, i, " at ");
+        i = put_num(s, i, work_err_at + 1u);
+    } else {
+        i = put(s, 0, "ok  ");
+        i = put_num(s, i, text_len(work));
+        i = put(s, i, "/90");
+    }
+    s[i] = 0;
+    draw_text_box(0, 92, 240, &FONT_S, s, work_err ? C_ERR : C_OFF, 1);
+}
+
+static void cv_token(int32_t x, int32_t y, const char *tok, uint16_t c)   /* one character, or two stacked */
+{
+    char s[2] = {tok[0] == ' ' ? '_' : tok[0], 0};
+    if (!tok[0]) return;
+    cv_text(x, y, &FONT_S, s, c);
+    if (tok[1]) { s[0] = tok[1]; cv_text(x, y + 16, &FONT_S, s, c); }
+}
+
+static void draw_palette(uint32_t layer)        /* the keys as a keyboard, each with its token, 240 x 64 */
+{
+    uint32_t k, w;
+    cv_begin(240, 64, C_BLACK);
+    for (k = 0, w = 0; k < 27u; k++)            /* 16 white keys of 15 px, the token low on the key */
+        if (!key_black(k)) {
+            const char *tok = key_token(k, layer);
+            cv_rect((int32_t)w * 15, 0, 14, 64, RGB(200, 200, 200));
+            cv_token((int32_t)w * 15 + 3, tok[1] ? 32 : 46, tok, C_BLACK);
+            w++;
+        }
+    for (k = 0, w = 0; k < 27u; k++)            /* the black ones on the line between two white */
+        if (key_black(k)) {
+            cv_rect((int32_t)w * 15 - 5, 0, 10, 34, RGB(40, 40, 40));
+            cv_token((int32_t)w * 15 - 4, 1, key_token(k, layer), C_WHITE);
+        } else
+            w++;
+    cv_blit(0, 112);
+}
+
+static void draw_edit_help(void)
+{
+    draw_text_box(0, 200, 240, &FONT_S, "FX MORE   OCT- OCT+ DELETE", C_OFF, 1);
+    draw_text_box(0, 220, 240, &FONT_S, "PLAY NOTE   SAVE   EDIT DONE", C_OFF, 1);
+}
+
 /* ---- the settings: what survives a power-off */
 typedef struct { uint8_t magic, patch, glide, pick, view; int8_t oct; ccmap_t map[NMAP]; } settings_t;
 
@@ -492,16 +624,33 @@ static void settings_check(settings_t *s)       /* what a power-off or another v
 }
 
 /* ---- the panel and the screens */
-enum { SCR_MAIN, SCR_CC, SCR_SAVE };
+enum { SCR_MAIN, SCR_CC, SCR_SAVE, SCR_EDIT };
 static settings_t set;
 static uint32_t dirty, t_change;                /* the settings changed, when (saved 2 s later, when silent) */
 static uint32_t scr = SCR_MAIN, scr_fresh = 1;  /* the screen showing; to draw whole */
 static uint32_t cc_sel, learn, save_sel;        /* the CC screen's slot, learning; the save screen's slot */
+static uint32_t audition;                       /* the editor's C4 sounds */
 static uint32_t bank, seq_turned, seq_down, loop_last = LOOP_ON;   /* the knobs' bank; SEQ: turned while held, when
                                                                        pressed (a tap, or a hold); the mode a tap turns on */
 
 static void changed(void) { dirty = 1; t_change = fm1_ms; }
-static void screen(uint32_t s) { scr = s; learn = 0; scr_fresh = 1; }
+
+static void screen(uint32_t s)
+{
+    if (audition && s != SCR_EDIT) { audition = 0; note_off(60); }
+    scr = s;
+    learn = 0;
+    scr_fresh = 1;
+}
+
+static void save_open(void)                     /* the save screen: on the slot playing, else the first free one */
+{
+    if (work_err) return;                       /* (what does not compile is not saved) */
+    save_sel = 0;
+    if (cur >= USER) save_sel = cur - USER;
+    else while (save_sel < SLOTS - 1u && lib[save_sel].used) save_sel++;
+    screen(SCR_SAVE);
+}
 
 static void pick(uint32_t p)
 {
@@ -511,19 +660,10 @@ static void pick(uint32_t p)
     changed();
 }
 
-static void main_input(uint32_t b, uint32_t rel)
+static void knobs_input(uint32_t b, uint32_t rel)   /* the four knobs, in the bank HOME or SEQ hold; SEQ's tap */
 {
     int32_t n;
     uint32_t k;
-    if (b & (1u << BTN_SEL)) { set.pick ^= 1u; changed(); }
-    if (b & (1u << BTN_FX)) { set.view = (uint8_t)((set.view + 1u) % VIEWS); changed(); }
-    if (b & (1u << BTN_SAVE)) {                 /* to the slot playing, else the first free one */
-        save_sel = 0;
-        if (cur >= USER) save_sel = cur - USER;
-        else while (save_sel < SLOTS - 1u && lib[save_sel].used) save_sel++;
-        screen(SCR_SAVE);
-    }
-    if ((n = fm1_enc_take(ENC_PRESETS))) pick(patch_step(cur, n));
     if (b & (1u << BTN_SEQ)) { seq_turned = 0; seq_down = fm1_ms; }
     for (k = 0; k < 4u; k++) {
         uint32_t id = bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k;
@@ -534,6 +674,17 @@ static void main_input(uint32_t b, uint32_t rel)
     }
     if (rel & (1u << BTN_SEQ) && !seq_turned && fm1_ms - seq_down < 300u)   /* a tap, not a hold */
         param_set(P_LOOP, param[P_LOOP] ? LOOP_OFF : (int32_t)loop_last);
+}
+
+static void main_input(uint32_t b, uint32_t rel)
+{
+    int32_t n;
+    if (b & (1u << BTN_SEL)) { set.pick ^= 1u; changed(); }
+    if (b & (1u << BTN_FX)) { set.view = (uint8_t)((set.view + 1u) % VIEWS); changed(); }
+    if (b & (1u << BTN_SAVE)) save_open();
+    if (b & (1u << BTN_EDIT)) { cpos = text_len(work); screen(SCR_EDIT); }
+    if ((n = fm1_enc_take(ENC_PRESETS))) pick(patch_step(cur, n));
+    knobs_input(b, rel);
     if ((n = fm1_enc_take(ENC_SELECT))) {
         param_set(P_GLIDE, param[P_GLIDE] + n);
         set.glide = (uint8_t)param[P_GLIDE];
@@ -565,6 +716,27 @@ static void cc_input(uint32_t b)
     if ((n = knob(ENC_KNOB4))) { c = m->max + n; m->max = (int16_t)(c < lo ? lo : c > hi ? hi : c); changed(); }
 }
 
+static void edit_input(uint32_t b, uint32_t rel, uint32_t keys_down)
+{
+    uint32_t k, len = text_len(work), layer = fm1_in.buttons >> BTN_FX & 1u;
+    int32_t n, c;
+    for (k = 0; k < 27u; k++)
+        if (keys_down >> k & 1u) work_insert(key_token(k, layer));
+    if (b & (1u << BTN_OCT_DOWN) && cpos) work_delete(cpos - 1u);
+    if (b & (1u << BTN_OCT_UP)) work_delete(cpos);
+    if ((n = fm1_enc_take(ENC_SELECT))) {
+        c = (int32_t)cpos + n;
+        cpos = c < 0 ? 0u : c > (int32_t)len ? len : (uint32_t)c;
+    }
+    if (b & (1u << BTN_PLAY)) {
+        audition ^= 1u;
+        if (audition) note_on(60, 100); else note_off(60);
+    }
+    knobs_input(b, rel);
+    if (b & (1u << BTN_SAVE)) save_open();
+    else if (b & (1u << BTN_EDIT)) screen(SCR_MAIN);
+}
+
 static void save_input(uint32_t b)
 {
     int32_t n = fm1_enc_take(ENC_SELECT) + fm1_enc_take(ENC_PRESETS), c;
@@ -586,6 +758,8 @@ static void app_main(void)
     uint32_t prev = 0, sounding = 0, k, t_load = 0, load = 0;
     uint32_t p_drawn = ~0u, note_drawn = ~0u, status_drawn = ~0u, head_drawn = ~0u, bank_drawn = ~0u;
     uint32_t t_view = 0, view_t = ~0u, view_shown = ~0u, view_fresh = 1;
+    uint32_t cpos_drawn = ~0u, layer_drawn = ~0u;   /* the editor's */
+    char text_drawn[TEXT_MAX + 1u] = {0};
     int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[BB_VARS] = {0};
     uint8_t key_note[27] = {0};                 /* the note each key started */
     lib_init();
@@ -614,7 +788,7 @@ static void app_main(void)
                 note_off(key_note[k]);
                 midi_send(0x80, key_note[k], 0);
             }
-            if (!(down >> k & 1u)) continue;
+            if (!(down >> k & 1u) || scr == SCR_EDIT) continue;   /* (the editor types with them) */
             if (set.pick) {
                 if (k < NF) pick(k);
                 continue;
@@ -627,11 +801,14 @@ static void app_main(void)
 
         b = fm1_input_edges(&rel);
         bank = fm1_in.buttons >> BTN_SEQ & 1u ? KNOBS_LOOP : fm1_in.buttons >> BTN_HOME & 1u ? KNOBS_EH : KNOBS_AD;
-        if (b & (1u << BTN_OCT_DOWN) && set.oct > -2) { set.oct--; changed(); }
-        if (b & (1u << BTN_OCT_UP) && set.oct < 2) { set.oct++; changed(); }
+        if (scr != SCR_EDIT) {                  /* (the editor deletes with them) */
+            if (b & (1u << BTN_OCT_DOWN) && set.oct > -2) { set.oct--; changed(); }
+            if (b & (1u << BTN_OCT_UP) && set.oct < 2) { set.oct++; changed(); }
+        }
         if (b & (1u << BTN_GLO)) screen(scr == SCR_CC ? SCR_MAIN : SCR_CC);
         else if (scr == SCR_MAIN) main_input(b, rel);
         else if (scr == SCR_CC) cc_input(b);
+        else if (scr == SCR_EDIT) edit_input(b, rel, down);
         else save_input(b);
 
         while (midi_get(&st, &d1, &d2)) {       /* USB-MIDI in, any channel */
@@ -644,11 +821,14 @@ static void app_main(void)
             }
         }
 
-        for (k = 0; k < 27u; k++)               /* lit: the formula picked, or the note that sounds */
-            fm1_led_key(KEY_LED(k), set.pick ? k == cur : gate && cur_note == base + k);
+        for (k = 0; k < 27u; k++)               /* lit: the key held (editor), the formula picked, the note that sounds */
+            fm1_led_key(KEY_LED(k), scr == SCR_EDIT ? keys >> k & 1u : set.pick ? k == cur : gate && cur_note == base + k);
         fm1_led_key(BTN_SEL, set.pick);
         fm1_led_key(BTN_GLO, scr == SCR_CC);
         fm1_led_key(BTN_SAVE, scr == SCR_SAVE);
+        fm1_led_key(BTN_EDIT, scr == SCR_EDIT);
+        fm1_led_key(BTN_PLAY, audition);
+        fm1_led_key(BTN_FX, scr == SCR_EDIT && fm1_in.buttons >> BTN_FX & 1u);
         fm1_led_key(BTN_REC, learn);
         fm1_led_key(BTN_HOME, bank == KNOBS_EH);
         fm1_led_key(BTN_SEQ, param[P_LOOP] != LOOP_OFF);
@@ -662,7 +842,7 @@ static void app_main(void)
         if (scr_fresh) {                        /* a screen comes up: everything on it is drawn again */
             scr_fresh = 0;
             lcd_fill(0, 0, 240, 240, C_BLACK);
-            p_drawn = note_drawn = status_drawn = head_drawn = view_shown = ~0u;
+            p_drawn = note_drawn = status_drawn = head_drawn = view_shown = cpos_drawn = layer_drawn = ~0u;
             for (k = 0; k < 4u; k++) v_drawn[k] = -1;
             memset(rows_drawn, 0, sizeof rows_drawn);
         }
@@ -677,6 +857,28 @@ static void app_main(void)
         } else if (scr == SCR_SAVE) {
             if (head_drawn) { head_drawn = 0; draw_head("SAVE TO", C_ACC, "SAVE: OK    HOME: CANCEL"); }
             draw_save_rows(save_sel);
+        } else if (scr == SCR_EDIT) {
+            uint32_t layer = fm1_in.buttons >> BTN_FX & 1u;
+            if (head_drawn) {
+                char t[24] = "EDIT ";
+                head_drawn = 0;
+                copy_str(t + 5, patch_name(cur), 11);
+                draw_text_box(0, 4, 240, &FONT_S, t, C_ACC, 1);
+                draw_edit_help();
+            }
+            if (memcmp(work, text_drawn, sizeof work) || cpos != cpos_drawn) {   /* (work_err follows work) */
+                memcpy(text_drawn, work, sizeof work);
+                cpos_drawn = cpos;
+                draw_edit_text();
+                draw_edit_status();
+            }
+            if (layer != layer_drawn) { layer_drawn = layer; draw_palette(layer); }
+            for (k = 0; k < 4u; k++) v[k] = param[bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k];
+            if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3] || bank != bank_drawn) {
+                for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
+                bank_drawn = bank;
+                draw_knobs(bank);
+            }
         } else {
             for (k = 0; k < 4u; k++) v[k] = param[bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k];
             st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load;
