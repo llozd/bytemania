@@ -81,6 +81,25 @@ static int settings_save(const void *p, uint32_t n)
     return 0;
 }
 
+#define LIB_SECTORS 2u                          /* the library: as platform.c, in memory */
+#define LIB_MAX (0x1000u - 12u)
+static uint8_t host_lib[LIB_SECTORS][LIB_MAX];
+static uint32_t host_lib_n[LIB_SECTORS];
+static int lib_load(uint32_t k, void *p, uint32_t n)
+{
+    if (k >= LIB_SECTORS || host_lib_n[k] != n) return -1;
+    memcpy(p, host_lib[k], n);
+    return 0;
+}
+static int lib_save(uint32_t k, const void *p, uint32_t n)
+{
+    if (k >= LIB_SECTORS || n > LIB_MAX) return -1;
+    memcpy(host_lib[k], p, n);
+    host_lib_n[k] = n;
+    printf("%6u ms  library sector %u saved (%u B)\n", fm1_ms, k, n);
+    return 0;
+}
+
 static uint8_t mq[64][3];
 static uint32_t mq_w, mq_r;
 static int midi_get(uint8_t *st, uint8_t *d1, uint8_t *d2)
