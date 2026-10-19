@@ -1,6 +1,6 @@
 # Licensing
 
-Dinghy is free software under the GNU General Public License, version 3 only (`GPL-3.0-only`, full text in
+Bytemania is free software under the GNU General Public License, version 3 only (`GPL-3.0-only`, full text in
 `LICENSE`). You may use, study, change and share it. If you give someone a firmware built from it, give them its
 complete source under the same licence too.
 
@@ -9,7 +9,8 @@ complete source under the same licence too.
 | | |
 | --- | --- |
 | The platform: `firmware/hal/`, `firmware/loader/`, `crt0.S`, `app.ld`, `firmware/src/` (`usb.c`, `ota.c`, `recovery.c`, `lcd.c`, `gfx.c`, `libc.c`, `bootguard.h`, `uac_fir.h`), `tools/` | Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments ([Felucca](https://github.com/hugelton/Felucca)), with the changes of [SLOOP](https://github.com/isod89/sloop-fm1) (isod89) |
-| The app `firmware/src/dinghy.c`, the wiring `platform.c`, the host mode `tests/`, the docs | zvenson |
+| The app `firmware/src/bytemania.c` as it came from [Dinghy](https://github.com/zvenson/dinghy), the wiring `platform.c`, the host mode `tests/`, the docs | zvenson |
+| The changes to the app and the build since Dinghy | llozd |
 
 ## Third-party material
 
@@ -20,10 +21,9 @@ complete source under the same licence too.
 
 ## The logo
 
-`assets/logo.svg` / `logo.png` carry the designburg signet: Copyright (C) designburg, all rights reserved, not under
-the GPL. It marks Dinghy itself; a fork uses its own logo.
+Dinghy's logo (the designburg signet) is not under the GPL and is not part of Bytemania.
 
 ## Trademarks
 
 "Felucca" and "Hügelton Instruments" are names of Hügelton Instruments; "M-VAVE" and "FM-1" belong to their
-owners. Dinghy is not made or endorsed by them.
+owners. Bytemania is not made or endorsed by them, or by the authors of Dinghy, Felucca or SLOOP.

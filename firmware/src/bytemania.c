@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Dinghy: the smallest FM-1 firmware to build your own on. A sine wave on the keys, and that is all.
+/* Bytemania: an FM-1 firmware, built on Dinghy. For now still Dinghy's sine wave on the keys.
  * This is the file to change. Everything below it (platform.c) is done: updates, the USB rescue,
  * USB-MIDI, USB audio, keys, knobs, LEDs, the screen, a settings sector.
  *
@@ -11,6 +11,7 @@
  * Rules of the road (the chip has no FPU and no libgcc): integers only, no float, no 64-bit division.
  * tests/host.c runs this file on a computer: the screen as a PNG, the sound as a WAV.
  * What platform.c offers: docs/API.md. The chip's rules: docs/RULES.md. */
+#define APP_NAME "BYTEMANIA"                    /* the rescue and the crash screen say this */
 #include "platform.c"
 
 /* ---- the sound (runs in the audio ISR: keep it short, no flash, no screen) */
