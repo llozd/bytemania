@@ -12,12 +12,26 @@ A bytebeat synth: a one-line formula of `t` makes an 8-bit sample each step of `
 | Keys | play (mono, last note wins). With SEL lit, each key picks a formula instead |
 | SEL | switch the keys between playing and picking formulas |
 | FX | switch the view: scope (the waveform) or raster (a row per 256 steps of `t`, coloured by value) |
+| GLO | open or close the CC screen |
 | PRESETS | the formula |
 | KNOB1-4 | the variables `a`-`d` (0-255, faster when turned fast) |
 | SELECT | glide (0-10) |
 | OCT- / OCT+ | octave |
 | MASTER | volume |
-| USB-MIDI | notes in, any channel, with velocity |
+| USB-MIDI | notes in, any channel, with velocity. Pitch bend is +-2 semitones |
+
+## CC mapping
+
+GLO opens the CC screen: 12 slots, each mapping a MIDI CC (any channel) to a parameter (`a`-`h`, glide or volume)
+over a min-max range. Setting min above max inverts it. Mappings are saved.
+
+| | |
+| --- | --- |
+| SELECT | the slot |
+| KNOB1 | its CC, or off |
+| KNOB2 | its parameter (resets the range to the parameter's full range) |
+| KNOB3 / KNOB4 | min / max |
+| REC | learn: the next CC that comes in goes to the selected slot |
 
 ## Formulas
 
