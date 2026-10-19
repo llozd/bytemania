@@ -16,8 +16,9 @@ complete source under the same licence too.
 
 `firmware/src/formulas.h` holds classic bytebeat formulas as published in viznut's
 [Some deep analysis of one-line music programs](http://countercomplex.blogspot.com/2011/10/some-deep-analysis-of-one-line-music.html)
-(2011). Each is credited on the screen and in the file as the post credits it: viznut, Niklas Roy, miiro, stephth,
-Rrrola, droid, Mu6k, and "several people" for the Forty-Two Melody.
+(2011) and in the [bytebeat composer](https://dollchan.net/bytebeat)'s library. Each is credited on the screen and in
+the file as its source credits it: viznut, Niklas Roy, miiro, stephth, Rrrola, droid, Mu6k, krcko, Blueberry, ryg,
+Lord Graga, marmakoide, skurk, raer, erlehmann, and "several people" for the Forty-Two Melody.
 
 ## Third-party material
 

@@ -29,9 +29,10 @@ t  a..h  123  0x7F  ( )
 
 Where C would be undefined, overflow wraps, shifts use their count `& 31`, and `x / 0` and `x % 0` are 0.
 
-The built-in formulas are classic bytebeats from viznut's
+The 22 built-in formulas are classic bytebeats from viznut's
 [Some deep analysis of one-line music programs](http://countercomplex.blogspot.com/2011/10/some-deep-analysis-of-one-line-music.html)
-(2011), with some of their numbers turned into variables. The defaults give the original formula.
+(2011) and the [bytebeat composer](https://dollchan.net/bytebeat)'s library, with some of their numbers turned into
+variables. The defaults give the original formula.
 
 <p align="center"><img src="docs/screen.png" width="240" alt="Bytemania's screen"></p>
 
