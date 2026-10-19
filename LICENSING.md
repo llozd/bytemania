@@ -25,6 +25,10 @@ Lord Graga, marmakoide, skurk, raer, erlehmann, and "several people" for the For
 | What | Licence | Where |
 | --- | --- | --- |
 | Terminus font 8x16 (ter-u16n), rendered into `firmware/gen/felucca_font.h` | SIL OFL 1.1 | `assets/fonts/Terminus-LICENSE.txt` |
+| Press Start 2P, Copyright 2012 The Press Start 2P Project Authors: `assets/fonts/PressStart2P-Regular.ttf`, and rasterized by `tools/gen_font.py` into `firmware/gen/pixel_font.h` | SIL OFL 1.1 | `assets/fonts/PressStart2P-OFL.txt` |
+
+The rasterized font is a Modified Version under the OFL, so it stays under the OFL (not the GPL) and does not use the
+font's Reserved Font Name: in Bytemania it is called "Bytemania Pixel".
 | JieLi AC79 SDK: `uboot.boot`, `cfg_tool.bin`, `eq_cfg_hw.bin` are read from your SDK checkout at build time and placed in the package; no SDK files are in this tree | Apache-2.0 | <https://gitee.com/Jieli-Tech/fw-AC79_AIoT_SDK> |
 
 ## The logo
