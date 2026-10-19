@@ -24,7 +24,15 @@
     X(f12, t?a?1:2:3) \
     X(f13, -(-t)*+3-t%7)
 
-#define ORIGINALS(X) /* formulas.h's bank, in order, as first published */ \
+#define ORIGINALS(X) /* formulas.h's bank, in order: the basic waveforms, then the classics as first published */ \
+    X(w0, t*67>>3) \
+    X(w1, (t*67>>3&255)<128?255:0) \
+    X(w2, ((t*67>>3)^-(t*67>>3>>7&1))*2) \
+    X(w3, 128+((t*67>>3&128)?-1:1)*((t*67>>3&127)*(127-(t*67>>3&127))>>5)) \
+    X(w4, (t*67>>3&255)<(t>>6&255)?255:0) \
+    X(w5, (t*67>>3&255)*12>>3) \
+    X(w6, (t*67>>3)^(t*101>>3)) \
+    X(w7, t*67>>3&224) \
     X(o0, t) \
     X(o1, t&t>>8) \
     X(o2, t*(((t>>12)|(t>>8))&(63&(t>>4)))) \
