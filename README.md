@@ -15,14 +15,29 @@ A bytebeat synth: a one-line formula of `t` makes an 8-bit sample each step of `
 | GLO | open or close the CC screen |
 | PRESETS | the formula |
 | KNOB1-4 | the variables `a`-`d` (0-255, faster when turned fast). Hold HOME for `e`-`h` |
+| SEQ | tap to switch the loop on or off. Hold it and the knobs set the loop (below) |
 | SELECT | glide (0-10) |
 | OCT- / OCT+ | octave |
 | MASTER | volume |
 | USB-MIDI | notes in, any channel, with velocity. Pitch bend is +-2 semitones |
 
+## Loop
+
+Hold SEQ and the knobs set the loop:
+
+| | |
+| --- | --- |
+| KNOB1 START | where it starts, in raster rows (256 steps of `t`) |
+| KNOB2 FINE | plus 0-255 steps |
+| KNOB3 LEN | its length: 16 to 65536 steps, in powers of two |
+| KNOB4 MODE | off, loop, or ping (forwards then backwards) |
+
+A note plays from `t = 0` until it reaches the start, then loops. A quick tap on SEQ switches the loop on or off.
+The loop settings are also CC targets.
+
 ## CC mapping
 
-GLO opens the CC screen: 12 slots, each mapping a MIDI CC (any channel) to a parameter (`a`-`h`, glide or volume)
+GLO opens the CC screen: 12 slots, each mapping a MIDI CC (any channel) to a parameter (`a`-`h`, glide, volume or the loop settings)
 over a min-max range. Setting min above max inverts it. Mappings are saved.
 
 | | |
