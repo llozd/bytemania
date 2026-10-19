@@ -10,7 +10,7 @@
  *   SELECT     the glide
  *   OCT- OCT+  the octave
  *   MASTER     the volume (platform.c)
- *   USB-MIDI   notes in play, with their velocity
+ *   USB-MIDI   notes in play, with their velocity; pitch bend +-2 semitones
  *
  * The formulas: bytebeat.c (compiled in the main loop, run in the audio interrupt). The views run the
  * formula again in the main loop, at the t the interrupt has reached.
@@ -21,9 +21,9 @@
 #include "formulas.h"
 
 /* ---- the parameters: one table that the knobs, MIDI and (later) the CC mappings all write */
-enum { P_A, P_B, P_C, P_D, P_E, P_F, P_G, P_H, P_GLIDE, P_N };
+enum { P_A, P_B, P_C, P_D, P_E, P_F, P_G, P_H, P_GLIDE, P_VOL, P_N };
 static const struct { int32_t min, max; } PARAM[P_N] = {
-    {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 10},
+    {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 10}, {0, 127},
 };
 static volatile int32_t param[P_N];
 
@@ -48,6 +48,7 @@ static const char *formula_load(const char *text, uint32_t *errpos)
 
 /* ---- the sound (runs in the audio ISR: keep it short, no flash, no screen) */
 static volatile uint32_t inc_target;            /* t steps per frame, Q16 */
+static volatile uint32_t bend_mul = 65536u;     /* pitch bend, Q16: on top of the glide, so it is immediate */
 static volatile int32_t gate;                   /* target level, Q15: 0 = released */
 static volatile uint32_t note_seq;              /* + 1 for a note from silence: t starts over, no glide */
 static volatile uint32_t dsp_us;                /* the last render's time */
@@ -59,18 +60,21 @@ static void app_audio(int32_t *out, uint32_t n)
     static int32_t amp, s;
     const bb_prog_t *p = prog_live;
     int32_t var[BB_VARS], g = gate;
-    uint32_t i, t0 = fm1_ticks(), target = inc_target, glide = (uint32_t)param[P_GLIDE];
+    uint32_t i, t0 = fm1_ticks(), target = inc_target, glide = (uint32_t)param[P_GLIDE], bm = bend_mul, step;
+    int32_t vol = param[P_VOL];
     prog_used = p;
     if (seq != note_seq) { seq = note_seq; t = 0; frac = 0; inc = target; }
     if (!amp && !g) { dsp_us = 0; return; }     /* silent: costs nothing */
     for (i = 0; i < BB_VARS; i++) var[i] = param[P_A + i];
+    step = (uint32_t)((uint64_t)inc * bm >> 16);
     for (i = 0; i < n; i++) {
         int32_t v;
         if (!(i & 15u) && inc != target) {      /* the glide, every 16 frames: 1 / 2^glide of the way */
             int32_t d = (int32_t)(target - inc) >> glide;
             inc = d ? inc + (uint32_t)d : target;
+            step = (uint32_t)((uint64_t)inc * bm >> 16);
         }
-        frac += inc;
+        frac += step;
         if (frac >> 16) {                       /* t moved: a new sample, held until it moves again */
             t += frac >> 16;
             frac &= 0xFFFFu;
@@ -78,7 +82,7 @@ static void app_audio(int32_t *out, uint32_t n)
         }
         if (amp < g) { amp += 48; if (amp > g) amp = g; }        /* attack ~10 ms */
         else if (amp > g) { amp -= 6; if (amp < g) amp = g; }    /* release ~100 ms */
-        v = (s * amp) >> 15;
+        v = (s * ((amp * vol) >> 7)) >> 15;
         out[2u * i] += v;                       /* L */
         out[2u * i + 1u] += v;                  /* R */
     }
@@ -96,6 +100,12 @@ static uint32_t inc_of(uint32_t note)
 {
     uint32_t oct = note / 12u;
     return oct >= 5u ? INC_C4[note % 12u] << (oct - 5u) : INC_C4[note % 12u] >> (5u - oct);
+}
+
+static void bend_set(int32_t b)                 /* -8192..8191 -> +-2 semitones */
+{
+    uint32_t p = 60u * 256u + (uint32_t)(b / 16), lo = inc_of(p >> 8), hi = inc_of((p >> 8) + 1u);
+    bend_mul = (lo + (hi - lo) * (p & 255u) / 256u) * 65536u / INC_C4[0];   /* linear within a semitone: < 0.3 % off */
 }
 
 static void held_drop(uint32_t note)
@@ -280,6 +290,7 @@ static void app_main(void)
     shade_init();
     formula_pick(set.formula);
     param_set(P_GLIDE, set.glide);
+    param_set(P_VOL, 127);
 
     lcd_fill(0, 0, 240, 240, C_BLACK);
 
@@ -330,6 +341,7 @@ static void app_main(void)
         while (midi_get(&st, &d1, &d2)) {       /* USB-MIDI in, any channel */
             if ((st & 0xF0u) == 0x90u && d2) note_on(d1, d2);
             else if ((st & 0xF0u) == 0x80u || (st & 0xF0u) == 0x90u) note_off(d1);
+            else if ((st & 0xF0u) == 0xE0u) bend_set((int32_t)((uint32_t)d2 << 7 | d1) - 8192);
         }
 
         for (k = 0; k < 27u; k++)               /* lit: the formula picked, or the note that sounds */
