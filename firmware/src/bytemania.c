@@ -26,6 +26,7 @@
  *   SELECT     the cursor
  *   OCT- OCT+  delete before / after the cursor
  *   PLAY       a C4 to hear it by, on / off
+ *   ARP        a new random formula (randbeat.c) with values for its variables, to edit or save
  *   KNOB1..4   as on the main screen
  *
  * The formulas: bytebeat.c (compiled in the main loop, run in the audio interrupt). The views run the
@@ -34,6 +35,7 @@
 #define APP_NAME "BYTEMANIA"                    /* the rescue and the crash screen say this */
 #include "platform.c"
 #include "bytebeat.c"
+#include "randbeat.c"
 #include "formulas.h"
 
 /* ---- the parameters: one table that the knobs, MIDI, the CC mappings and the patches all write */
@@ -171,7 +173,8 @@ static void note_off(uint32_t note)
 #define SLOTS 64u
 #define SLOTS_PER (SLOTS / LIB_SECTORS)
 #define TEXT_MAX 90u                            /* a formula: what the main screen's three lines show */
-#define USER 128u                               /* a patch number: 0..NF-1 built in, USER + k slot k */
+#define USER 128u                               /* a patch number: 0..NF-1 built in, USER + k slot k, */
+#define RANDOM 255u                             /* or one randbeat.c made */
 typedef struct {
     char name[12], text[TEXT_MAX + 2u];         /* both 0-terminated */
     uint8_t var[BB_VARS], loop, lstart, lfine, llen, glide, used, pad[2];
@@ -179,6 +182,7 @@ typedef struct {
 static slot_t lib[SLOTS] __attribute__((section(".pool")));
 static uint32_t lib_dirty;                      /* bit k: sector k to save, when nothing sounds */
 static uint32_t cur = 2;                        /* the patch playing */
+static uint32_t patch_seq;                      /* + 1 for each patch picked, made or saved: the screen shows it */
 static char work[TEXT_MAX + 1u];                /* its formula */
 static uint32_t edited;                         /* work is not the patch's own formula any more */
 static const char *work_err;                    /* work does not compile (the last that did plays), and where */
@@ -205,7 +209,7 @@ static void lib_init(void)
 }
 
 static int patch_ok(uint32_t p) { return p < NF || (p >= USER && p - USER < SLOTS && lib[p - USER].used); }
-static const char *patch_name(uint32_t p) { return p < USER ? FORMULA[p].name : lib[p - USER].name; }
+static const char *patch_name(uint32_t p) { return p < USER ? FORMULA[p].name : p == RANDOM ? "RANDOM" : lib[p - USER].name; }
 
 static void patch_pick(uint32_t p)
 {
@@ -224,11 +228,28 @@ static void patch_pick(uint32_t p)
     cur = p;
     edited = 0;
     work_err = 0;
+    patch_seq++;
+}
+
+static void patch_random(void)                  /* a new one, with its variables (the loop and glide stay) */
+{
+    static uint32_t seed = 1;
+    int32_t var[BB_VARS];
+    uint32_t i;
+    seed = seed * 1664525u + 1013904223u + fm1_ticks() + fm1_ms;   /* (when ARP was pressed: never the same) */
+    rb_make(work, TEXT_MAX, var, seed);
+    for (i = 0; i < BB_VARS; i++) param_set(P_A + i, var[i]);
+    formula_load(work, 0);                      /* (it compiled in rb_make) */
+    cur = RANDOM;
+    edited = 0;
+    work_err = 0;
+    patch_seq++;
 }
 
 static uint32_t patch_step(uint32_t p, int32_t n) /* n patches on: the built-ins, then the used slots, round */
 {
-    uint32_t i = p < USER ? p : NF + (p - USER), all = NF + SLOTS;
+    uint32_t all = NF + SLOTS, i = p < USER ? p : NF + (p - USER);
+    if (p == RANDOM) i = n > 0 ? all - 1u : 0u;  /* (from a random one: on to the first, or back to the last) */
     while (n) {
         i = n > 0 ? (i + 1u) % all : (i + all - 1u) % all;
         if (i < NF || lib[i - NF].used) n += n > 0 ? -1 : 1;
@@ -252,6 +273,7 @@ static void patch_save(uint32_t k)              /* what plays now, into slot k, 
     lib_dirty |= 1u << (k / SLOTS_PER);
     cur = USER + k;
     edited = 0;
+    patch_seq++;
 }
 
 /* ---- editing work: the keys' tokens go in at the cursor; each change compiles */
@@ -312,13 +334,14 @@ static void draw_patch(void)                    /* number and name, author, the 
     char s[32];
     const char *p = work;
     uint32_t n, y;
+    n = 0;
     if (cur < USER) { s[0] = (char)('0' + (cur + 1u) / 10u); s[1] = (char)('0' + (cur + 1u) % 10u); n = 2; }
-    else { s[0] = 'U'; s[1] = (char)('0' + (cur - USER + 1u) / 10u); s[2] = (char)('0' + (cur - USER + 1u) % 10u); n = 3; }
-    s[n++] = ' ';
+    else if (cur != RANDOM) { s[0] = 'U'; s[1] = (char)('0' + (cur - USER + 1u) / 10u); s[2] = (char)('0' + (cur - USER + 1u) % 10u); n = 3; }
+    if (n) s[n++] = ' ';
     copy_str(s + n, patch_name(cur), edited ? 10 : 11);
     if (edited) { n = text_len(s); s[n++] = '*'; s[n] = 0; }   /* changed in the editor, not saved */
     draw_text_box(0, 4, 240, &FONT_L, s, C_ACC, 1);
-    draw_text_box(0, 38, 240, &FONT_S, cur < USER ? FORMULA[cur].by : "your patch", C_OFF, 1);
+    draw_text_box(0, 38, 240, &FONT_S, cur < USER ? FORMULA[cur].by : cur == RANDOM ? "made at random" : "your patch", C_OFF, 1);
     cv_begin(240, 48, C_BLACK);
     for (y = 0; *p && y < 48u; y += 16u) {
         for (n = 0; *p && n < 30u; n++) s[n] = *p++;
@@ -586,7 +609,7 @@ static void draw_palette(uint32_t layer)        /* the keys as a keyboard, each 
 
 static void draw_edit_help(void)
 {
-    draw_text_box(0, 200, 240, &FONT_S, "FX MORE   OCT- OCT+ DELETE", C_OFF, 1);
+    draw_text_box(0, 200, 240, &FONT_S, "FX MORE OCT-/+ DEL ARP RANDOM", C_OFF, 1);
     draw_text_box(0, 220, 240, &FONT_S, "PLAY NOTE   SAVE   EDIT DONE", C_OFF, 1);
 }
 
@@ -647,7 +670,7 @@ static void save_open(void)                     /* the save screen: on the slot 
 {
     if (work_err) return;                       /* (what does not compile is not saved) */
     save_sel = 0;
-    if (cur >= USER) save_sel = cur - USER;
+    if (cur >= USER && cur - USER < SLOTS) save_sel = cur - USER;
     else while (save_sel < SLOTS - 1u && lib[save_sel].used) save_sel++;
     screen(SCR_SAVE);
 }
@@ -732,6 +755,8 @@ static void edit_input(uint32_t b, uint32_t rel, uint32_t keys_down)
         audition ^= 1u;
         if (audition) note_on(60, 100); else note_off(60);
     }
+    if (b & (1u << BTN_ARP)) { patch_random(); cpos = text_len(work); }   /* (not kept in the settings: a power-off
+                                                                              goes back to the last patch picked) */
     knobs_input(b, rel);
     if (b & (1u << BTN_SAVE)) save_open();
     else if (b & (1u << BTN_EDIT)) screen(SCR_MAIN);
@@ -859,9 +884,10 @@ static void app_main(void)
             draw_save_rows(save_sel);
         } else if (scr == SCR_EDIT) {
             uint32_t layer = fm1_in.buttons >> BTN_FX & 1u;
-            if (head_drawn) {
+            if (head_drawn || patch_seq != p_drawn) {   /* (the patch changes here with ARP) */
                 char t[24] = "EDIT ";
                 head_drawn = 0;
+                p_drawn = patch_seq;
                 copy_str(t + 5, patch_name(cur), 11);
                 draw_text_box(0, 4, 240, &FONT_S, t, C_ACC, 1);
                 draw_edit_help();
@@ -882,7 +908,7 @@ static void app_main(void)
         } else {
             for (k = 0; k < 4u; k++) v[k] = param[bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k];
             st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load;
-            if (cur != p_drawn) { p_drawn = cur; draw_patch(); view_fresh = 1; view_t = ~0u; }
+            if (patch_seq != p_drawn) { p_drawn = patch_seq; draw_patch(); view_fresh = 1; view_t = ~0u; }
             if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3] || bank != bank_drawn) {
                 for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
                 bank_drawn = bank;

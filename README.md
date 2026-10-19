@@ -57,12 +57,17 @@ that compiled keeps playing.
 | SELECT | move the cursor |
 | OCT- / OCT+ | delete before / after the cursor |
 | PLAY | a held C4 to listen with, on or off |
+| ARP | replace the formula with a random one |
 | KNOB1-4 | the variables, as on the main screen |
 | SAVE | save to a user slot |
 | EDIT | back to the main screen |
 
 An edit that isn't saved shows a `*` after the name, and keeps playing until you pick another patch. Built-in
 formulas can't be overwritten, so saving an edited one saves a copy to a user slot.
+
+ARP makes a random formula from the pieces classic bytebeats are built from, with its numbers as the variables `a`-`d`
+so the knobs reach them. Each one is checked before you hear it: anything silent, stuck or noise is thrown away and
+another made.
 
 ## CC mapping
 
@@ -101,6 +106,7 @@ variables. The defaults give the original formula.
 firmware/src/bytemania.c  <- the app: sound, screen, keys
 firmware/src/bytebeat.c   <- the formula compiler and interpreter
 firmware/src/formulas.h   <- the built-in formulas
+firmware/src/randbeat.c   <- the random formulas
 firmware/src/platform.c   <- Dinghy's plumbing (boot, USB, updates, audio ISR, settings)
 firmware/src/*.c, hal/    <- Felucca's platform, as SLOOP carries it
 ```
