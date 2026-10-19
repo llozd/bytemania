@@ -14,7 +14,7 @@ A bytebeat synth: a one-line formula of `t` makes an 8-bit sample each step of `
 | FX | switch the view: scope (the waveform) or raster (a row per 256 steps of `t`, coloured by value) |
 | GLO | open or close the CC screen |
 | PRESETS | the formula |
-| KNOB1-4 | the variables `a`-`d` (0-255, faster when turned fast) |
+| KNOB1-4 | the variables `a`-`d` (0-255, faster when turned fast). Hold HOME for `e`-`h` |
 | SELECT | glide (0-10) |
 | OCT- / OCT+ | octave |
 | MASTER | volume |
