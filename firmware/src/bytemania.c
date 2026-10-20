@@ -13,7 +13,7 @@
  *   SEQ        tap (< 0.3 s): the loop on / off; held, the knobs are the loop: start, fine, length, mode
  *   LFO        tap: the voice mode: MONO, DUAL (left and right, the right detuned and offset), POLY (4 voices, no
  *              glide), MULTI (a formula each side, with a..h each); kept with the patch. Held, the knobs are
- *              DUAL's detune and offset
+ *              DUAL's detune and offset, and DUAL's and MULTI's width
  *   PLAY       MULTI: which side the screen shows and the knobs and PRESETS change (lit: the right)
  *   SELECT     the glide
  *   OCT- OCT+  the octave
@@ -49,6 +49,7 @@
 /* ---- the parameters: one table that the knobs, MIDI, the CC mappings and the patches all write */
 enum { P_A, P_B, P_C, P_D, P_E, P_F, P_G, P_H, P_GLIDE, P_VOL, P_LOOP, P_LSTART, P_LFINE, P_LLEN, P_DETUNE, P_OFFSET,
        P_RA, P_RB, P_RC, P_RD, P_RE, P_RF, P_RG, P_RH,   /* MULTI: the right side's a..h */
+       P_WIDTH,                                /* DUAL, MULTI: 100 the sides apart, 0 both in both channels */
        P_N };                                  /* (the CC mappings keep these numbers: new ones go at the end) */
 enum { LOOP_OFF, LOOP_ON, LOOP_PING };
 static const struct { int32_t min, max; } PARAM[P_N] = {
@@ -56,6 +57,7 @@ static const struct { int32_t min, max; } PARAM[P_N] = {
     {0, 2}, {0, 255}, {0, 255}, {0, 12},        /* the loop: mode, start (rows of 256), + fine, length 16 << n */
     {0, 100}, {0, 255},                         /* DUAL: the right side's detune (cents), t offset (16 steps) */
     {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255},
+    {0, 100},
 };
 static volatile int32_t param[P_N];
 
@@ -116,6 +118,9 @@ static void app_audio(int32_t *out, uint32_t n)
     uint32_t bm_r = (uint32_t)((uint64_t)bend_mul * (65536u + 38u * (uint32_t)param[P_DETUNE]) >> 16);   /* + 1 cent:
                                                                                    x 1.000578 (~ 38 / 65536) */
     uint32_t glide = mode == MODE_POLY ? 0u : (uint32_t)param[P_GLIDE], bm = bend_mul;
+    uint32_t cross = lanes == 2u ? (100u - (uint32_t)param[P_WIDTH]) * 256u / 100u : 0u;   /* the other side, Q8 */
+    int32_t g_own = (int32_t)(32768u * 256u / (256u + cross)), g_other = (int32_t)(32768u * cross / (256u + cross));
+                                                /* Q15, together 1: a one-channel speaker hears both sides */
     uint32_t lmode = (uint32_t)param[P_LOOP], lstart = (uint32_t)(param[P_LSTART] * 256 + param[P_LFINE]);
     uint32_t llen = 16u << param[P_LLEN];
     prog_used[0] = side_p[0];
@@ -123,7 +128,9 @@ static void app_audio(int32_t *out, uint32_t n)
     for (i = 0; i < BB_VARS; i++) { var[0][i] = param[P_A + i]; var[1][i] = param[P_RA + i]; }
     for (k = 0; k < lanes; k++) {
         uint32_t src = mode == MODE_POLY ? k : 0u, target = voice[src].inc, pos, t, frac, inc, step;
-        uint32_t pan = lanes == 2u ? 1u << k : 3u, mul = mode == MODE_DUAL && k ? bm_r : bm;   /* bit 0 L, bit 1 R */
+        uint32_t mul = mode == MODE_DUAL && k ? bm_r : bm;
+        int32_t gl = lanes == 2u && k ? g_other : g_own, gr = lanes == 2u && !k ? g_other : g_own;   /* lane 0 is
+                                                                                   the left, 1 the right */
         uint32_t side = mode == MODE_MULTI ? k : 0u;   /* MULTI: the right lane plays the right side */
         const bb_prog_t *p = side_p[side];
         int32_t g = voice[src].gate, amp, s;
@@ -153,8 +160,8 @@ static void app_audio(int32_t *out, uint32_t n)
             if (amp < g) { amp += 48; if (amp > g) amp = g; }        /* attack ~10 ms */
             else if (amp > g) { amp -= 6; if (amp < g) amp = g; }    /* release ~100 ms */
             v = (s * ((amp * vol) >> 7)) >> 15;
-            if (pan & 1u) out[2u * i] += v;     /* L */
-            if (pan & 2u) out[2u * i + 1u] += v;   /* R */
+            out[2u * i] += (v * gl) >> 15;      /* L */
+            out[2u * i + 1u] += (v * gr) >> 15; /* R */
         }
         ln[k].pos = pos; ln[k].t = t; ln[k].frac = frac; ln[k].inc = inc; ln[k].amp = amp; ln[k].s = s;
     }
@@ -268,7 +275,7 @@ typedef struct {
     char name[12], text[TEXT_MAX + 2u];         /* both 0-terminated */
     uint8_t var[BB_VARS], loop, lstart, lfine, llen, glide, used, mode, detune, offset;
     char r_name[12], r_text[TEXT_MAX + 2u];     /* MULTI: the right side */
-    uint8_t r_var[BB_VARS], pad[7];
+    uint8_t r_var[BB_VARS], width, pad[6];      /* (width + 1: 0, from v1.0, reads as 50) */
 } slot_t;
 typedef char slot_size_is_240[sizeof(slot_t) == 240u ? 1 : -1];   /* (16 to a sector; the format on flash) */
 static slot_t lib[SLOTS] __attribute__((section(".pool")));
@@ -372,7 +379,7 @@ static void patch_pick(uint32_t p)
     if (p < USER) {                             /* (the bank compiles: tests/test_bytebeat.c) */
         copy_str(work, FORMULA[p].text, TEXT_MAX);
         for (i = 0; i < BB_VARS; i++) param_set(P_A + i, i < 4u ? FORMULA[p].def[i] : 0);
-        param_set(P_DETUNE, 0); param_set(P_OFFSET, 0);
+        param_set(P_DETUNE, 0); param_set(P_OFFSET, 0); param_set(P_WIDTH, 50);
         if (vmode != MODE_MONO) mode_set(MODE_MONO);
     } else {
         const slot_t *s = &lib[p - USER];
@@ -380,7 +387,7 @@ static void patch_pick(uint32_t p)
         for (i = 0; i < BB_VARS; i++) param_set(P_A + i, s->var[i]);
         param_set(P_LOOP, s->loop); param_set(P_LSTART, s->lstart); param_set(P_LFINE, s->lfine);
         param_set(P_LLEN, s->llen); param_set(P_GLIDE, s->glide);
-        param_set(P_DETUNE, s->detune); param_set(P_OFFSET, s->offset);
+        param_set(P_DETUNE, s->detune); param_set(P_OFFSET, s->offset); param_set(P_WIDTH, s->width ? s->width - 1 : 50);
         if (vmode != s->mode) mode_set(s->mode);
         if (s->mode == MODE_MULTI && s->r_text[0]) { right_set(s->r_name, s->r_text, s->r_var, 0); r_cur = p; }
     }
@@ -445,6 +452,7 @@ static void patch_save(uint32_t k, const char *name)   /* what plays now, into s
     s->loop = (uint8_t)param[P_LOOP]; s->lstart = (uint8_t)param[P_LSTART]; s->lfine = (uint8_t)param[P_LFINE];
     s->llen = (uint8_t)param[P_LLEN]; s->glide = (uint8_t)param[P_GLIDE];
     s->mode = (uint8_t)vmode; s->detune = (uint8_t)param[P_DETUNE]; s->offset = (uint8_t)param[P_OFFSET];
+    s->width = (uint8_t)(param[P_WIDTH] + 1);
     if (vmode == MODE_MULTI) {
         copy_str(s->r_name, r_name, sizeof s->r_name - 1u);
         copy_str(s->r_text, r_text, TEXT_MAX);
@@ -623,21 +631,24 @@ static void draw_patch(void)                    /* number and name, author, the 
 
 enum { KNOBS_AD, KNOBS_EH, KNOBS_LOOP, KNOBS_VOICE };   /* what the knobs turn: a..d, e..h (HOME held), the loop (SEQ
                                                           held), DUAL's spread (LFO held) */
-static const uint8_t BANK_KNOB[2][4] = {{P_LSTART, P_LFINE, P_LLEN, P_LOOP}, {P_DETUNE, P_OFFSET, P_N, P_N}};
+static const uint8_t BANK_KNOB[2][4] = {{P_LSTART, P_LFINE, P_LLEN, P_LOOP}, {P_DETUNE, P_OFFSET, P_WIDTH, P_N}};
 
 static uint32_t knob_param(uint32_t bank, uint32_t i)   /* P_N: none */
 {
-    return bank >= KNOBS_LOOP ? BANK_KNOB[bank - KNOBS_LOOP][i] : (side ? P_RA : P_A) + 4u * bank + i;
+    uint32_t id = bank >= KNOBS_LOOP ? BANK_KNOB[bank - KNOBS_LOOP][i] : (side ? P_RA : P_A) + 4u * bank + i;
+    if (bank == KNOBS_VOICE && (vmode == MODE_MONO || vmode == MODE_POLY || (vmode == MODE_MULTI && id != P_WIDTH)))
+        return P_N;                             /* (only what does something in this mode) */
+    return id;
 }
 
 static void knob_text(uint32_t bank, uint32_t i, char *name, char *d)   /* the knob's label and its value */
 {
     static const char *const MODE[3] = {"OFF", "LOOP", "PING"};
-    name[0] = (char)(bank == KNOBS_LOOP ? "SFLM"[i] : bank == KNOBS_VOICE ? "DO  "[i] : (int)('A' + 4u * bank + i));
+    name[0] = (char)(bank == KNOBS_LOOP ? "SFLM"[i] : bank == KNOBS_VOICE ? "DOW "[i] : (int)('A' + 4u * bank + i));
     name[1] = 0;
     if (side && bank < KNOBS_LOOP) { name[1] = name[0]; name[0] = 'R'; name[2] = 0; }   /* RA..RH */
-    if (knob_param(bank, i) == P_N) d[0] = 0;
-    else if (bank == KNOBS_VOICE) d[put(d, put_num(d, 0, (uint32_t)param[knob_param(bank, i)]), i ? "" : "c")] = 0;
+    if (knob_param(bank, i) == P_N) name[0] = d[0] = 0;   /* (nothing on it here: an empty cell) */
+    else if (bank == KNOBS_VOICE) d[put(d, put_num(d, 0, (uint32_t)param[knob_param(bank, i)]), i == 0 ? "c" : i == 2 ? "%" : "")] = 0;
     else if (bank != KNOBS_LOOP) d[put_num(d, 0, (uint32_t)param[knob_param(bank, i)])] = 0;
     else if (i == 3u) d[put(d, 0, MODE[param[P_LOOP]])] = 0;
     else if (i == 2u && param[P_LLEN] >= 6) d[put(d, put_num(d, 0, 16u << param[P_LLEN] >> 10), "K")] = 0;
@@ -775,8 +786,9 @@ static int32_t knob(uint32_t enc)               /* detents, 8x when turned fast 
 #define NMAP 12u
 #define CC_OFF 128u
 typedef struct { uint8_t cc, target; int16_t min, max; } ccmap_t;
-static const char *const PNAME[P_N] = {"A", "B", "C", "D", "E", "F", "G", "H", "GLIDE", "VOL", "LOOP", "START", "FINE", "LEN",
-                                       "DETUN", "OFFS"};
+static const char *const PNAME[] = {"A", "B", "C", "D", "E", "F", "G", "H", "GLIDE", "VOL", "LOOP", "START", "FINE", "LEN",
+                                    "DETUN", "OFFS", "RA", "RB", "RC", "RD", "RE", "RF", "RG", "RH", "WIDTH"};
+typedef char pname_has_every_param[sizeof PNAME / sizeof PNAME[0] == P_N ? 1 : -1];   /* (a CC screen row each) */
 
 static void cc_in(const ccmap_t *map, uint32_t cc, uint32_t val)
 {
@@ -1163,6 +1175,7 @@ static void app_main(void)
     settings_check(&set);
     shade_init();
     param_set(P_VOL, 127);
+    param_set(P_WIDTH, 50);
     param_set(P_LLEN, 8);                       /* 4096 steps, half a second at middle C */
     patch_pick(set.patch);
     if (set.patch < USER) param_set(P_GLIDE, set.glide);   /* (a slot brings its own) */
