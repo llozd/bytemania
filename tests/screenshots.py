@@ -51,8 +51,8 @@ class Script:
 
 
 SHOTS = {
-    "main": Script().keys(C4).shot(),
-    "raster": Script().btn(FX).keys(C4).shot(2400),
+    "main": Script().keys(C4).shot(2400),
+    "scope": Script().btn(FX).keys(C4).shot(),
     "waves": Script().enc(PRESETS, -7).keys(C4).shot(),                       # 11 FIRST -> 04 SINE
     "knobs-eh": Script().hold(1 << HOME).enc(KNOB1, 40).enc(KNOB2, 7).enc(KNOB3, 3).enc(KNOB4, 90).keys(C4).shot(),
     "dual": Script().hold(1 << LFO).hold(0).keys(C4).hold(1 << LFO).enc(KNOB1, 12).enc(KNOB2, 40).shot(),

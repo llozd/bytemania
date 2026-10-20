@@ -57,7 +57,7 @@ From the top:
 - the patch: its number and name (`U03` for a user slot), with a `*` if it has unsaved edits
 - who wrote it
 - the formula, with each variable in its own colour
-- the view: the waveform or the raster (see [Views](#views))
+- the view: the raster or the waveform (see [Views](#views))
 - the four knobs, framed in the same colours as their variables in the formula
 - the note, octave, glide and voice mode, whether the keys play or pick, and how busy the audio is (DSP %)
 
@@ -84,16 +84,16 @@ nothing is playing, since writing to flash briefly stops the sound.
 ## Views
 
 <p align="center">
-  <img src="docs/screens/main.png" width="240" alt="The scope view">
-  <img src="docs/screens/raster.png" width="240" alt="The raster view">
+  <img src="docs/screens/main.png" width="240" alt="The raster view">
+  <img src="docs/screens/scope.png" width="240" alt="The scope view">
 </p>
 
 **FX** switches the view:
 
+- **raster** (the default): the classic bytebeat picture. Each row is 256 steps of `t`, coloured by the sample (indigo
+  to pink to cyan), with the newest row at the bottom. Rhythm and structure show up as patterns. At middle C it covers
+  about the last 2 seconds
 - **scope**: the last 232 samples, as a waveform
-- **raster**: the classic bytebeat picture. Each row is 256 steps of `t`, coloured by the sample (indigo to pink to
-  cyan), with the newest row at the bottom. Rhythm and structure show up as patterns. At middle C it covers about the
-  last 2 seconds
 
 Both are drawn from the formula itself, so they stay in step with what you hear, including the loop.
 

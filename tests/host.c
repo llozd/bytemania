@@ -154,7 +154,7 @@ static const host_ev_t SCRIPT0[] = {             /* t, keys, btn, MIDI, encoder 
     {3600, 0, -1, 0, 0, 0, 0, 0},
     {3700, 0, BTN_SEL, 0, 0, 0, 0, 0},                          /* the keys play */
     {3800, 1u << 7, -1, 0, 0, 0, 0, 0},
-    {4000, 0, BTN_FX, 0, 0, 0, 0, 0},                           /* the raster view */
+    {4000, 0, BTN_FX, 0, 0, 0, 0, 0},                           /* the scope view */
     {4600, 0, -1, 0, 0, 0, 0, 0},
 };
 static const host_ev_t *script = SCRIPT0;
