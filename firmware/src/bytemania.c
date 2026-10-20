@@ -11,6 +11,7 @@
  *   PRESETS    the patch: the built-in formulas, then the used slots
  *   KNOB1..4   the variables a..d (faster when turned fast); with HOME held, e..h
  *   SEQ        tap (< 0.3 s): the loop on / off; held, the knobs are the loop: start, fine, length, mode
+ *   LFO        the voice mode: MONO, POLY (4 voices, no glide); kept with the patch
  *   SELECT     the glide
  *   OCT- OCT+  the octave
  *   MASTER     the volume (platform.c)
@@ -70,14 +71,22 @@ static const char *formula_load(const char *text, uint32_t *errpos)
     return 0;
 }
 
-/* ---- the sound (runs in the audio ISR: keep it short, no flash, no screen) */
-static volatile uint32_t inc_target;            /* t steps per frame, Q16 */
+/* ---- the voices: the notes the main loop plays. MONO plays voice 0, the last held note; POLY all four */
+#define NV 4u
+enum { MODE_MONO, MODE_DUAL, MODE_POLY, MODE_MULTI, MODES };
+static struct {
+    volatile uint32_t inc;                      /* t steps per frame for its note, Q16 */
+    volatile int32_t gate;                      /* target level, Q15: 0 = released */
+    volatile uint32_t seq;                      /* + 1 for a note from silence: t starts over, no glide */
+    uint32_t note, age;                         /* (the main loop's) */
+} voice[NV];
+static volatile uint32_t vmode;                 /* MODE_..., the patch's */
 static volatile uint32_t bend_mul = 65536u;     /* pitch bend, Q16: on top of the glide, so it is immediate */
-static volatile int32_t gate;                   /* target level, Q15: 0 = released */
-static volatile uint32_t note_seq;              /* + 1 for a note from silence: t starts over, no glide */
 static volatile uint32_t dsp_us;                /* the last render's time */
-static volatile uint32_t t_now;                 /* where t is, for the views */
+static volatile uint32_t t_now;                 /* where lane 0's t is, for the views */
 
+/* ---- the sound (runs in the audio ISR: keep it short, no flash, no screen). It renders lanes: each plays a voice's
+ * note through a formula into the left, the right or both channels. MONO is 1 lane, POLY 4. */
 static uint32_t loop_t(uint32_t pos, uint32_t mode, uint32_t start, uint32_t len)   /* len: a power of 2 */
 {
     uint32_t off;
@@ -88,48 +97,55 @@ static uint32_t loop_t(uint32_t pos, uint32_t mode, uint32_t start, uint32_t len
 
 static void app_audio(int32_t *out, uint32_t n)
 {
-    static uint32_t pos, t, frac, inc, seq;     /* pos: steps since the note began; t: where the loop puts it */
-    static int32_t amp, s;
+    static struct { uint32_t pos, t, frac, inc, seq; int32_t amp, s; } ln[NV];   /* pos: steps since the note began;
+                                                                                    t: where the loop puts it */
     const bb_prog_t *p = prog_live;
-    int32_t var[BB_VARS], g = gate;
-    uint32_t i, t0 = fm1_ticks(), target = inc_target, glide = (uint32_t)param[P_GLIDE], bm = bend_mul, step;
-    int32_t vol = param[P_VOL];
+    int32_t var[BB_VARS], vol = param[P_VOL];
+    uint32_t mode = vmode, lanes = mode == MODE_POLY ? NV : 1u, k, i, t0 = fm1_ticks();
+    uint32_t glide = mode == MODE_POLY ? 0u : (uint32_t)param[P_GLIDE], bm = bend_mul;
     uint32_t lmode = (uint32_t)param[P_LOOP], lstart = (uint32_t)(param[P_LSTART] * 256 + param[P_LFINE]);
     uint32_t llen = 16u << param[P_LLEN];
     prog_used = p;
-    if (seq != note_seq) { seq = note_seq; pos = t = 0; frac = 0; inc = target; }
-    if (!amp && !g) { dsp_us = 0; return; }     /* silent: costs nothing */
     for (i = 0; i < BB_VARS; i++) var[i] = param[P_A + i];
-    step = (uint32_t)((uint64_t)inc * bm >> 16);
-    for (i = 0; i < n; i++) {
-        int32_t v;
-        if (!(i & 15u) && inc != target) {      /* the glide, every 16 frames: 1 / 2^glide of the way */
-            int32_t d = (int32_t)(target - inc) >> glide;
-            inc = d ? inc + (uint32_t)d : target;
-            step = (uint32_t)((uint64_t)inc * bm >> 16);
+    for (k = 0; k < lanes; k++) {
+        uint32_t src = mode == MODE_POLY ? k : 0u, target = voice[src].inc, pos, t, frac, inc, step;
+        int32_t g = voice[src].gate, amp, s;
+        if (ln[k].seq != voice[src].seq) { ln[k].seq = voice[src].seq; ln[k].pos = ln[k].t = ln[k].frac = 0; ln[k].inc = target; }
+        pos = ln[k].pos; t = ln[k].t; frac = ln[k].frac; inc = ln[k].inc; amp = ln[k].amp; s = ln[k].s;
+        if (!amp && !g) continue;               /* silent: costs nothing */
+        step = (uint32_t)((uint64_t)inc * bm >> 16);
+        for (i = 0; i < n; i++) {
+            int32_t v;
+            if (!(i & 15u) && inc != target) {  /* the glide, every 16 frames: 1 / 2^glide of the way */
+                int32_t d = (int32_t)(target - inc) >> glide;
+                inc = d ? inc + (uint32_t)d : target;
+                step = (uint32_t)((uint64_t)inc * bm >> 16);
+            }
+            frac += step;
+            if (frac >> 16) {                   /* t moved: a new sample, held until it moves again */
+                pos += frac >> 16;
+                t = loop_t(pos, lmode, lstart, llen);
+                frac &= 0xFFFFu;
+                s = ((bb_run(p, t, var) & 255) - 128) * 256;
+            }
+            if (amp < g) { amp += 48; if (amp > g) amp = g; }        /* attack ~10 ms */
+            else if (amp > g) { amp -= 6; if (amp < g) amp = g; }    /* release ~100 ms */
+            v = (s * ((amp * vol) >> 7)) >> 15;
+            out[2u * i] += v;                   /* L */
+            out[2u * i + 1u] += v;              /* R */
         }
-        frac += step;
-        if (frac >> 16) {                       /* t moved: a new sample, held until it moves again */
-            pos += frac >> 16;
-            t = loop_t(pos, lmode, lstart, llen);
-            frac &= 0xFFFFu;
-            s = ((bb_run(p, t, var) & 255) - 128) * 256;
-        }
-        if (amp < g) { amp += 48; if (amp > g) amp = g; }        /* attack ~10 ms */
-        else if (amp > g) { amp -= 6; if (amp < g) amp = g; }    /* release ~100 ms */
-        v = (s * ((amp * vol) >> 7)) >> 15;
-        out[2u * i] += v;                       /* L */
-        out[2u * i + 1u] += v;                  /* R */
+        ln[k].pos = pos; ln[k].t = t; ln[k].frac = frac; ln[k].inc = inc; ln[k].amp = amp; ln[k].s = s;
     }
-    t_now = t;
+    t_now = ln[0].t;
     dsp_us = (fm1_ticks() - t0) / FM1_TICKS_PER_US;
 }
 
-/* ---- notes (main loop): mono, the last held note sounds; releasing it goes back to the one before */
+/* ---- notes (main loop). MONO: the last held note sounds, letting go goes back to the one before (legato: no new
+ * t, and the glide). POLY: each note a voice: the same note again, else a free one, else the oldest is taken. */
 static const uint32_t INC_C4[12] = {            /* MIDI 60..71: 8 kHz * 2^(i/12) * 65536 / 44100; other octaves shift */
     11889u, 12596u, 13345u, 14138u, 14979u, 15869u, 16813u, 17813u, 18872u, 19994u, 21183u, 22443u};
 static uint8_t held[16];
-static uint32_t nheld, cur_note = 255;
+static uint32_t nheld, cur_note = 255, ages;
 
 static uint32_t inc_of(uint32_t note)
 {
@@ -151,40 +167,95 @@ static void held_drop(uint32_t note)
     nheld = j;
 }
 
+static int note_sounds(uint32_t note)           /* (the key LEDs) */
+{
+    uint32_t k;
+    for (k = 0; k < NV; k++)
+        if (voice[k].gate && voice[k].note == note) return 1;
+    return 0;
+}
+
+static int silent(void)                         /* no note held: flash may be written (it stalls the sound) */
+{
+    uint32_t k;
+    for (k = 0; k < NV; k++)
+        if (voice[k].gate) return 0;
+    return 1;
+}
+
 static void note_on(uint32_t note, uint32_t vel)
 {
-    int fresh = !gate;
     if (note > 127u || !vel) return;
+    cur_note = note;
+    if (vmode == MODE_POLY) {
+        uint32_t k, pick = 0, best = ~0u;
+        for (k = 0; k < NV; k++) {
+            uint32_t score = voice[k].gate && voice[k].note == note ? 0u
+                           : voice[k].gate ? 0x80000000u + voice[k].age : 1u + voice[k].age;
+            if (score < best) { best = score; pick = k; }
+        }
+        voice[pick].note = note;
+        voice[pick].age = ++ages;
+        voice[pick].inc = inc_of(note);         /* the pitch, then t from 0, then the gate (RULES.md) */
+        voice[pick].seq++;
+        voice[pick].gate = (int32_t)(vel * 100u);   /* half a MONO note: four together clip less */
+        return;
+    }
     held_drop(note);
     if (nheld == sizeof held) held_drop(held[0]);
     held[nheld++] = (uint8_t)note;
-    cur_note = note;
-    inc_target = inc_of(note);                  /* the pitch before the gate (RULES.md) */
-    if (fresh) note_seq++;
-    gate = (int32_t)(vel * 200u);               /* 127 -> 25400 */
+    voice[0].note = note;
+    voice[0].inc = inc_of(note);
+    if (!voice[0].gate) voice[0].seq++;         /* from silence: t from 0, no glide */
+    voice[0].gate = (int32_t)(vel * 200u);      /* 127 -> 25400 */
 }
 
 static void note_off(uint32_t note)
 {
+    uint32_t k;
+    if (vmode == MODE_POLY) {
+        for (k = 0; k < NV; k++)
+            if (voice[k].note == note) voice[k].gate = 0;
+        return;
+    }
     held_drop(note);
-    if (note != cur_note || !gate) return;
-    if (nheld) { cur_note = held[nheld - 1u]; inc_target = inc_of(cur_note); }
-    else gate = 0;
+    if (note != voice[0].note || !voice[0].gate) return;
+    if (nheld) { voice[0].note = cur_note = held[nheld - 1u]; voice[0].inc = inc_of(cur_note); }
+    else voice[0].gate = 0;
 }
 
-/* ---- the patches: the built-in formulas, and 64 user slots of a whole patch (formula, a..h, loop, glide),
- * 32 to a flash sector (platform.c), kept in RAM */
+static void mode_set(uint32_t m)                /* all notes off first: the voices change hands */
+{
+    uint32_t k;
+    for (k = 0; k < NV; k++) voice[k].gate = 0;
+    nheld = 0;
+    vmode = m;
+}
+
+/* ---- the patches: the built-in formulas, and 64 user slots of a whole patch (formula, a..h, loop, glide, voice
+ * mode, and room for DUAL's spread and MULTI's right side), 16 to a flash sector (platform.c), kept in RAM */
 #define SLOTS 64u
 #define SLOTS_PER (SLOTS / LIB_SECTORS)
 #define TEXT_MAX 90u                            /* a formula: what the main screen's three lines show */
 #define USER 128u                               /* a patch number: 0..NF-1 built in, USER + k slot k, */
 #define BLANK 254u                              /* the blank one (INIT), */
 #define RANDOM 255u                             /* or one randbeat.c made */
+#define LIB_V2 0x32545942u                      /* "BYT2": the library's format */
 typedef struct {
     char name[12], text[TEXT_MAX + 2u];         /* both 0-terminated */
-    uint8_t var[BB_VARS], loop, lstart, lfine, llen, glide, used, pad[2];
+    uint8_t var[BB_VARS], loop, lstart, lfine, llen, glide, used, mode, detune, offset;
+    char r_name[12], r_text[TEXT_MAX + 2u];     /* MULTI: the right side */
+    uint8_t r_var[BB_VARS], pad[7];
 } slot_t;
+typedef char slot_size_is_240[sizeof(slot_t) == 240u ? 1 : -1];   /* (16 to a sector; the format on flash) */
 static slot_t lib[SLOTS] __attribute__((section(".pool")));
+
+/* the first format (v0.1): 2 sectors of 32 slots of 120 bytes, "BYTM". lib_init moves it over */
+#define LIB_V1 0x4D545942u
+typedef struct {
+    char name[12], text[TEXT_MAX + 2u];
+    uint8_t var[BB_VARS], loop, lstart, lfine, llen, glide, used, pad[2];
+} slot_v1_t;
 static uint32_t lib_dirty;                      /* bit k: sector k to save, when nothing sounds */
 #define FIRST_PATCH 10u                         /* what plays when nothing was saved: viznut's FIRST */
 static uint32_t cur = FIRST_PATCH;              /* the patch playing */
@@ -201,16 +272,37 @@ static void copy_str(char *d, const char *s, uint32_t max)   /* at most max char
     d[i] = 0;
 }
 
+/* The library from flash. A slot comes from its sector in this format; else, from the first format's sector that
+ * held it (v0.1's sector j had slots 32 j .. 32 j + 31, where sectors 2 j and 2 j + 1 now go), and its sector is
+ * written in this format when nothing sounds. lib_save writes the highest sector first: 3 and 2, then 1 over v0.1's
+ * sector 1, then 0 over its sector 0. A save cut halfway leaves each slot readable from one format or the other. */
 static void lib_init(void)
 {
     static bb_prog_t check;
-    uint32_t k;
-    for (k = 0; k < LIB_SECTORS; k++)
-        if (lib_load(k, &lib[k * SLOTS_PER], SLOTS_PER * sizeof(slot_t)))
-            memset(&lib[k * SLOTS_PER], 0, SLOTS_PER * sizeof(slot_t));
+    static slot_v1_t old[32] __attribute__((section(".pool")));
+    uint32_t k, i, ok = 0;
+    for (k = 0; k < LIB_SECTORS; k++) {
+        if (!lib_load(k, LIB_V2, &lib[k * SLOTS_PER], SLOTS_PER * sizeof(slot_t))) ok |= 1u << k;
+        else memset(&lib[k * SLOTS_PER], 0, SLOTS_PER * sizeof(slot_t));
+    }
+    for (k = 0; k < 2u; k++) {
+        if ((ok >> (2u * k) & 3u) == 3u || lib_load(k, LIB_V1, old, sizeof old)) continue;
+        for (i = 0; i < 32u; i++) {
+            slot_t *s = &lib[32u * k + i];
+            if (ok >> ((32u * k + i) / SLOTS_PER) & 1u) continue;
+            memcpy(s->name, old[i].name, sizeof s->name);
+            memcpy(s->text, old[i].text, sizeof s->text);
+            memcpy(s->var, old[i].var, sizeof s->var);
+            s->loop = old[i].loop; s->lstart = old[i].lstart; s->lfine = old[i].lfine; s->llen = old[i].llen;
+            s->glide = old[i].glide; s->used = old[i].used;
+        }
+        lib_dirty |= ~ok & (3u << (2u * k));
+    }
     for (k = 0; k < SLOTS; k++) {               /* a slot that cannot be shown or played reads as empty */
-        lib[k].name[sizeof lib[k].name - 1u] = lib[k].text[TEXT_MAX] = 0;
-        if (lib[k].used != 1u || bb_compile(lib[k].text, &check, 0)) memset(&lib[k], 0, sizeof lib[k]);
+        slot_t *s = &lib[k];
+        s->name[sizeof s->name - 1u] = s->text[TEXT_MAX] = s->r_name[sizeof s->r_name - 1u] = s->r_text[TEXT_MAX] = 0;
+        if (s->used != 1u || bb_compile(s->text, &check, 0)) memset(s, 0, sizeof *s);
+        if (s->mode >= MODES) s->mode = MODE_MONO;
     }
 }
 
@@ -226,12 +318,14 @@ static void patch_pick(uint32_t p)
     if (p < USER) {                             /* (the bank compiles: tests/test_bytebeat.c) */
         copy_str(work, FORMULA[p].text, TEXT_MAX);
         for (i = 0; i < BB_VARS; i++) param_set(P_A + i, i < 4u ? FORMULA[p].def[i] : 0);
+        if (vmode != MODE_MONO) mode_set(MODE_MONO);
     } else {
         const slot_t *s = &lib[p - USER];
         copy_str(work, s->text, TEXT_MAX);
         for (i = 0; i < BB_VARS; i++) param_set(P_A + i, s->var[i]);
         param_set(P_LOOP, s->loop); param_set(P_LSTART, s->lstart); param_set(P_LFINE, s->lfine);
         param_set(P_LLEN, s->llen); param_set(P_GLIDE, s->glide);
+        if (vmode != s->mode) mode_set(s->mode);
     }
     formula_load(work, 0);
     cur = p;
@@ -262,6 +356,7 @@ static void patch_blank(void)                   /* INIT: t alone, the variables 
     for (i = 0; i < BB_VARS; i++) param_set(P_A + i, 0);
     param_set(P_LOOP, LOOP_OFF);
     param_set(P_GLIDE, 0);
+    if (vmode != MODE_MONO) mode_set(MODE_MONO);
     formula_load(work, 0);
     cur = BLANK;
     edited = 0;
@@ -290,6 +385,7 @@ static void patch_save(uint32_t k, const char *name)   /* what plays now, into s
     for (i = 0; i < BB_VARS; i++) s->var[i] = (uint8_t)param[P_A + i];
     s->loop = (uint8_t)param[P_LOOP]; s->lstart = (uint8_t)param[P_LSTART]; s->lfine = (uint8_t)param[P_LFINE];
     s->llen = (uint8_t)param[P_LLEN]; s->glide = (uint8_t)param[P_GLIDE];
+    s->mode = (uint8_t)vmode;
     s->used = 1;
     lib_dirty |= 1u << (k / SLOTS_PER);
     cur = USER + k;
@@ -555,7 +651,9 @@ static void draw_view(uint32_t view, int fresh) /* fresh: the formula or a varia
     cv_blit(0, 88);
 }
 
-static void draw_status(uint32_t note, int32_t oct, uint32_t glide, uint32_t load, int pick)
+static const char *const MODE_NAME[MODES] = {"MONO", "DUAL", "POLY", "MULTI"};
+
+static void draw_status(uint32_t note, int32_t oct, uint32_t glide, uint32_t load, int pick, uint32_t mode)
 {
     static const char *const NAME[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
     char s[40];
@@ -566,6 +664,8 @@ static void draw_status(uint32_t note, int32_t oct, uint32_t glide, uint32_t loa
     i = put_num(s, i, (uint32_t)(oct < 0 ? -oct : oct));
     i = put(s, i, "  GLIDE ");
     i = put_num(s, i, glide);
+    i = put(s, i, "  ");
+    i = put(s, i, MODE_NAME[mode]);
     s[i] = 0;
     text_box(0, 204, 240, &FONT_S, s, C_SOFT, 1);
     i = put(s, 0, pick ? "KEYS PICK  DSP " : "KEYS PLAY  DSP ");
@@ -854,6 +954,7 @@ static void main_input(uint32_t b, uint32_t rel)
     int32_t n;
     if (b & (1u << BTN_SEL)) { set.pick ^= 1u; changed(); }
     if (b & (1u << BTN_FX)) { set.view = (uint8_t)((set.view + 1u) % VIEWS); changed(); }
+    if (b & (1u << BTN_LFO)) mode_set(vmode == MODE_MONO ? MODE_POLY : MODE_MONO);   /* (the patch's: saved with it) */
     if (b & (1u << BTN_SAVE)) save_open();
     if (b & (1u << BTN_EDIT)) { cpos = text_len(work); screen(SCR_EDIT); }
     if ((n = fm1_enc_take(ENC_PRESETS))) pick(patch_step(cur, n));
@@ -1018,7 +1119,7 @@ static void app_main(void)
         }
 
         for (k = 0; k < 27u; k++)               /* lit: the key held (editor), the formula picked, the note that sounds */
-            fm1_led_key(KEY_LED(k), scr == SCR_EDIT ? keys >> k & 1u : set.pick ? k == cur : gate && cur_note == base + k);
+            fm1_led_key(KEY_LED(k), scr == SCR_EDIT ? keys >> k & 1u : set.pick ? k == cur : note_sounds(base + k));
         fm1_led_key(BTN_SEL, set.pick);
         fm1_led_key(BTN_GLO, scr == SCR_CC);
         fm1_led_key(BTN_SAVE, scr == SCR_SAVE || scr == SCR_NAME);
@@ -1029,6 +1130,7 @@ static void app_main(void)
         fm1_led_key(BTN_REC, learn);
         fm1_led_key(BTN_HOME, bank == KNOBS_EH);
         fm1_led_key(BTN_SEQ, param[P_LOOP] != LOOP_OFF);
+        fm1_led_key(BTN_LFO, vmode != MODE_MONO);
         fm1_led_key(BTN_OCT_DOWN, set.oct < 0);
         fm1_led_key(BTN_OCT_UP, set.oct > 0);
 
@@ -1091,7 +1193,8 @@ static void app_main(void)
             }
         } else {
             for (k = 0; k < 4u; k++) v[k] = param[bank == KNOBS_LOOP ? (uint32_t)LOOP_KNOB[k] : P_A + 4u * bank + k];
-            st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load;
+            st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load
+                   + 11110u * vmode;
             if (patch_seq != p_drawn) { p_drawn = patch_seq; draw_patch(); view_fresh = 1; view_t = ~0u; }
             if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3] || bank != bank_drawn) {
                 for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
@@ -1107,17 +1210,17 @@ static void app_main(void)
             }
             if (cur_note != note_drawn || st_now != status_drawn) {
                 note_drawn = cur_note; status_drawn = st_now;
-                draw_status(cur_note, set.oct, (uint32_t)param[P_GLIDE], load, set.pick);
+                draw_status(cur_note, set.oct, (uint32_t)param[P_GLIDE], load, set.pick, vmode);
             }
         }
 
-        if (!gate && dirty && fm1_ms - t_change > 2000u) {   /* 2 s after the change, when silent (an erase stalls the sound) */
+        if (silent() && dirty && fm1_ms - t_change > 2000u) {   /* 2 s after the change, when silent (an erase stalls the sound) */
             settings_save(&set, sizeof set);
             dirty = 0;
         }
-        if (!gate && lib_dirty) {               /* a slot saved: its sector, when silent */
-            for (k = 0; k < LIB_SECTORS; k++)
-                if (lib_dirty >> k & 1u) lib_save(k, &lib[k * SLOTS_PER], SLOTS_PER * sizeof(slot_t));
+        if (silent() && lib_dirty) {            /* a slot saved: its sector, when silent; the highest first (lib_init) */
+            for (k = LIB_SECTORS; k-- > 0; )
+                if (lib_dirty >> k & 1u) lib_save(k, LIB_V2, &lib[k * SLOTS_PER], SLOTS_PER * sizeof(slot_t));
             lib_dirty = 0;
         }
     }
