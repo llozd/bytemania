@@ -70,7 +70,7 @@ From the top:
 | SELECT | glide, 0 (off) to 10 |
 | PRESETS | the patch: the 30 built-ins, then your saved slots |
 | SEL | switch the keys between playing and picking a patch. In pick mode, keys 1-27 pick built-ins 01-27 |
-| LFO | tap: the next voice mode. Hold: the knobs set DUAL's detune and offset (see [Voice modes](#voice-modes)) |
+| LFO | tap: the next voice mode. Hold: the knobs set detune, offset and width (see [Voice modes](#voice-modes)) |
 | PLAY | in MULTI: switch between the left and right side |
 | MASTER | volume |
 | USB-MIDI | notes in on any channel, with velocity. Pitch bend is ±2 semitones and ignores glide, so bends are instant |
@@ -143,9 +143,15 @@ The mode is part of the patch: saving keeps it, and built-ins start in MONO.
 | Mode | |
 | --- | --- |
 | MONO | one note at a time, with glide |
-| DUAL | the formula twice, left and right. Hold **LFO** and KNOB1 detunes the right side (0-100 cents) and KNOB2 starts it further along in `t` (0-255, in steps of 16), for width, chorus and phasing |
+| DUAL | the formula twice, left and right. Hold **LFO** and KNOB1 detunes the right side (0-100 cents) and KNOB2 starts it further along in `t` (0-255, in steps of 16), for chorus and phasing |
 | POLY | up to 4 notes, each running its own `t`. No glide. Each note is half as loud as in MONO, so chords don't clip as much |
 | MULTI | a different formula on each side, both playing the note. Each side has its own `a`-`h` |
+
+In DUAL and MULTI, holding **LFO** also puts **WIDTH** on KNOB3: how far apart the two sides are. At 100% each side
+has its own channel; lower, each channel mixes in some of the other side, down to 0% where both channels play the
+same mix. The FM-1's speaker plays one channel only, so at 100% it plays just one side. The default, 50%, keeps both
+sides on the speaker and still sounds wide on headphones. Holding LFO shows only the knobs that do something in the
+mode you're in.
 
 In MULTI, the right side starts as a copy of the left. **PLAY** switches which side the screen shows (PLAY is lit for
 the right). With the right side shown, **PRESETS** picks its formula from the built-ins and your slots, and the
@@ -265,7 +271,7 @@ back to the slots. Saved slots come after the built-ins on **PRESETS**.
 </p>
 
 **GLO** opens the CC screen: 12 slots, each mapping a MIDI CC (on any channel) to a parameter over a min-max range.
-Targets are `a`-`h`, glide, volume, the four loop settings, DUAL's detune and offset, and MULTI's right-side
+Targets are `a`-`h`, glide, volume, the four loop settings, DUAL's detune and offset, width, and MULTI's right-side
 variables (`RA`-`RH`). Setting min above max inverts the control. The NOW
 column shows the parameter's value as it moves. Mappings are saved.
 
