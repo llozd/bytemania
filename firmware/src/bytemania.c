@@ -12,7 +12,9 @@
  *   KNOB1..4   the variables a..d (faster when turned fast); with HOME held, e..h
  *   SEQ        tap (< 0.3 s): the loop on / off; held, the knobs are the loop: start, fine, length, mode
  *   LFO        tap: the voice mode: MONO, DUAL (left and right, the right detuned and offset), POLY (4 voices, no
- *              glide); kept with the patch. Held, the knobs are DUAL's detune and offset
+ *              glide), MULTI (a formula each side, with a..h each); kept with the patch. Held, the knobs are
+ *              DUAL's detune and offset
+ *   PLAY       MULTI: which side the screen shows and the knobs and PRESETS change (lit: the right)
  *   SELECT     the glide
  *   OCT- OCT+  the octave
  *   MASTER     the volume (platform.c)
@@ -46,12 +48,14 @@
 
 /* ---- the parameters: one table that the knobs, MIDI, the CC mappings and the patches all write */
 enum { P_A, P_B, P_C, P_D, P_E, P_F, P_G, P_H, P_GLIDE, P_VOL, P_LOOP, P_LSTART, P_LFINE, P_LLEN, P_DETUNE, P_OFFSET,
+       P_RA, P_RB, P_RC, P_RD, P_RE, P_RF, P_RG, P_RH,   /* MULTI: the right side's a..h */
        P_N };                                  /* (the CC mappings keep these numbers: new ones go at the end) */
 enum { LOOP_OFF, LOOP_ON, LOOP_PING };
 static const struct { int32_t min, max; } PARAM[P_N] = {
     {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 10}, {0, 127},
     {0, 2}, {0, 255}, {0, 255}, {0, 12},        /* the loop: mode, start (rows of 256), + fine, length 16 << n */
     {0, 100}, {0, 255},                         /* DUAL: the right side's detune (cents), t offset (16 steps) */
+    {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255},
 };
 static volatile int32_t param[P_N];
 
@@ -60,19 +64,23 @@ static void param_set(uint32_t id, int32_t v)
     param[id] = v < PARAM[id].min ? PARAM[id].min : v > PARAM[id].max ? PARAM[id].max : v;
 }
 
-/* ---- the programs: three, so the main loop always has one the interrupt is not running */
-static bb_prog_t prog[3];
-static const bb_prog_t *volatile prog_live = &prog[0], *volatile prog_used = &prog[0];
+/* ---- the programs: for each side (the left, and MULTI's right) three, so the main loop always has one the
+ * interrupt is not running */
+static bb_prog_t prog[2][3];
+static const bb_prog_t *volatile prog_live[2] = {&prog[0][0], &prog[1][0]};
+static const bb_prog_t *volatile prog_used[2] = {&prog[0][0], &prog[1][0]};
 
-static const char *formula_load(const char *text, uint32_t *errpos)
+static const char *side_load(uint32_t side, const char *text, uint32_t *errpos)
 {
-    bb_prog_t *p = &prog[0];
+    bb_prog_t *p = &prog[side][0];
     const char *err;
-    while (p == prog_live || p == prog_used) p++;
+    while (p == prog_live[side] || p == prog_used[side]) p++;
     if ((err = bb_compile(text, p, errpos))) return err;
-    prog_live = p;                              /* a 32-bit store: the interrupt sees the old one or this */
+    prog_live[side] = p;                        /* a 32-bit store: the interrupt sees the old one or this */
     return 0;
 }
+
+static const char *formula_load(const char *text, uint32_t *errpos) { return side_load(0, text, errpos); }
 
 /* ---- the voices: the notes the main loop plays. MONO plays voice 0, the last held note; POLY all four */
 #define NV 4u
@@ -86,7 +94,7 @@ static struct {
 static volatile uint32_t vmode;                 /* MODE_..., the patch's */
 static volatile uint32_t bend_mul = 65536u;     /* pitch bend, Q16: on top of the glide, so it is immediate */
 static volatile uint32_t dsp_us;                /* the last render's time */
-static volatile uint32_t t_now;                 /* where lane 0's t is, for the views */
+static volatile uint32_t t_now[2];              /* where lanes 0 and 1 are, for the views */
 
 /* ---- the sound (runs in the audio ISR: keep it short, no flash, no screen). It renders lanes: each plays a voice's
  * note through a formula into the left, the right or both channels. MONO is 1 lane, POLY 4. */
@@ -102,19 +110,22 @@ static void app_audio(int32_t *out, uint32_t n)
 {
     static struct { uint32_t pos, t, frac, inc, seq; int32_t amp, s; } ln[NV];   /* pos: steps since the note began;
                                                                                     t: where the loop puts it */
-    const bb_prog_t *p = prog_live;
-    int32_t var[BB_VARS], vol = param[P_VOL];
+    const bb_prog_t *side_p[2] = {prog_live[0], prog_live[1]};
+    int32_t var[2][BB_VARS], vol = param[P_VOL];
     uint32_t mode = vmode, lanes = mode == MODE_POLY ? NV : mode == MODE_MONO ? 1u : 2u, k, i, t0 = fm1_ticks();
     uint32_t bm_r = (uint32_t)((uint64_t)bend_mul * (65536u + 38u * (uint32_t)param[P_DETUNE]) >> 16);   /* + 1 cent:
                                                                                    x 1.000578 (~ 38 / 65536) */
     uint32_t glide = mode == MODE_POLY ? 0u : (uint32_t)param[P_GLIDE], bm = bend_mul;
     uint32_t lmode = (uint32_t)param[P_LOOP], lstart = (uint32_t)(param[P_LSTART] * 256 + param[P_LFINE]);
     uint32_t llen = 16u << param[P_LLEN];
-    prog_used = p;
-    for (i = 0; i < BB_VARS; i++) var[i] = param[P_A + i];
+    prog_used[0] = side_p[0];
+    prog_used[1] = side_p[1];
+    for (i = 0; i < BB_VARS; i++) { var[0][i] = param[P_A + i]; var[1][i] = param[P_RA + i]; }
     for (k = 0; k < lanes; k++) {
         uint32_t src = mode == MODE_POLY ? k : 0u, target = voice[src].inc, pos, t, frac, inc, step;
         uint32_t pan = lanes == 2u ? 1u << k : 3u, mul = mode == MODE_DUAL && k ? bm_r : bm;   /* bit 0 L, bit 1 R */
+        uint32_t side = mode == MODE_MULTI ? k : 0u;   /* MULTI: the right lane plays the right side */
+        const bb_prog_t *p = side_p[side];
         int32_t g = voice[src].gate, amp, s;
         if (ln[k].seq != voice[src].seq) {     /* t from 0; DUAL's right side ahead by its offset */
             ln[k].seq = voice[src].seq;
@@ -137,7 +148,7 @@ static void app_audio(int32_t *out, uint32_t n)
                 pos += frac >> 16;
                 t = loop_t(pos, lmode, lstart, llen);
                 frac &= 0xFFFFu;
-                s = ((bb_run(p, t, var) & 255) - 128) * 256;
+                s = ((bb_run(p, t, var[side]) & 255) - 128) * 256;
             }
             if (amp < g) { amp += 48; if (amp > g) amp = g; }        /* attack ~10 ms */
             else if (amp > g) { amp -= 6; if (amp < g) amp = g; }    /* release ~100 ms */
@@ -147,7 +158,8 @@ static void app_audio(int32_t *out, uint32_t n)
         }
         ln[k].pos = pos; ln[k].t = t; ln[k].frac = frac; ln[k].inc = inc; ln[k].amp = amp; ln[k].s = s;
     }
-    t_now = ln[0].t;
+    t_now[0] = ln[0].t;
+    t_now[1] = ln[1].t;
     dsp_us = (fm1_ticks() - t0) / FM1_TICKS_PER_US;
 }
 
@@ -323,6 +335,37 @@ static const char *patch_name(uint32_t p)
     return p < USER ? FORMULA[p].name : p == RANDOM ? "RANDOM" : p == BLANK ? "INIT" : lib[p - USER].name;
 }
 
+/* MULTI's right side: a patch of its own (a formula and its a..h, P_RA..P_RH), picked from the built-ins and the
+ * slots; it starts as a copy of the left */
+static uint32_t r_cur = FIRST_PATCH;            /* the patch it came from, for PRESETS to step on from */
+static char r_name[12], r_text[TEXT_MAX + 1u];
+static uint32_t side;                           /* the side the main screen shows, the knobs and PRESETS change */
+
+static void right_set(const char *name, const char *text, const uint8_t *var8, const int16_t *def4)
+{
+    uint32_t i;
+    copy_str(r_name, name, sizeof r_name - 1u);
+    copy_str(r_text, text, TEXT_MAX);
+    for (i = 0; i < BB_VARS; i++) param_set(P_RA + i, var8 ? var8[i] : i < 4u ? def4[i] : 0);
+    side_load(1, r_text, 0);                    /* (built-ins and slots compile) */
+}
+
+static void right_pick(uint32_t p)              /* a built-in, or a slot (its left side) */
+{
+    if (p < USER) right_set(FORMULA[p].name, FORMULA[p].text, 0, FORMULA[p].def);
+    else right_set(lib[p - USER].name, lib[p - USER].text, lib[p - USER].var, 0);
+    r_cur = p;
+}
+
+static void right_copy(const char *name)        /* the left side as it plays, as the right */
+{
+    uint8_t v[BB_VARS];
+    uint32_t i;
+    for (i = 0; i < BB_VARS; i++) v[i] = (uint8_t)param[P_A + i];
+    right_set(name, work, v, 0);
+    r_cur = cur;
+}
+
 static void patch_pick(uint32_t p)
 {
     uint32_t i;
@@ -339,8 +382,11 @@ static void patch_pick(uint32_t p)
         param_set(P_LLEN, s->llen); param_set(P_GLIDE, s->glide);
         param_set(P_DETUNE, s->detune); param_set(P_OFFSET, s->offset);
         if (vmode != s->mode) mode_set(s->mode);
+        if (s->mode == MODE_MULTI && s->r_text[0]) { right_set(s->r_name, s->r_text, s->r_var, 0); r_cur = p; }
     }
     formula_load(work, 0);
+    if (vmode == MODE_MULTI && (p < USER || !lib[p - USER].r_text[0])) right_copy(patch_name(p));
+    side = 0;
     cur = p;
     edited = 0;
     work_err = 0;
@@ -399,6 +445,11 @@ static void patch_save(uint32_t k, const char *name)   /* what plays now, into s
     s->loop = (uint8_t)param[P_LOOP]; s->lstart = (uint8_t)param[P_LSTART]; s->lfine = (uint8_t)param[P_LFINE];
     s->llen = (uint8_t)param[P_LLEN]; s->glide = (uint8_t)param[P_GLIDE];
     s->mode = (uint8_t)vmode; s->detune = (uint8_t)param[P_DETUNE]; s->offset = (uint8_t)param[P_OFFSET];
+    if (vmode == MODE_MULTI) {
+        copy_str(s->r_name, r_name, sizeof s->r_name - 1u);
+        copy_str(s->r_text, r_text, TEXT_MAX);
+        for (i = 0; i < BB_VARS; i++) s->r_var[i] = (uint8_t)param[P_RA + i];
+    }
     s->used = 1;
     lib_dirty |= 1u << (k / SLOTS_PER);
     cur = USER + k;
@@ -541,10 +592,12 @@ static void cv_formula_char(int32_t x, int32_t y, const char *s, uint32_t i)
     cv_text(x, y, &FONT_S, c, char_colour(s, i));
 }
 
-static void draw_patch(void)                    /* number and name, author, the formula 30 characters a line */
+static void draw_patch(void)                    /* number and name, author, the formula 30 characters a line; in
+                                                   MULTI, the right side's when it is the one shown */
 {
     char s[32];
-    uint32_t n = 0, i, len = text_len(work);
+    const char *f = side ? r_text : work;
+    uint32_t n = 0, i, len = text_len(f);
     if (cur < USER) { s[0] = (char)('0' + (cur + 1u) / 10u); s[1] = (char)('0' + (cur + 1u) % 10u); n = 2; }
     else if (cur < BLANK) { s[0] = 'U'; s[1] = (char)('0' + (cur - USER + 1u) / 10u); s[2] = (char)('0' + (cur - USER + 1u) % 10u); n = 3; }
     if (n) s[n++] = ' ';
@@ -553,12 +606,17 @@ static void draw_patch(void)                    /* number and name, author, the 
     cv_begin(240, 18, C_BG);
     cv_title((240 - text_w(&FONT_P16, s)) / 2, 0, s, C_PINK);
     cv_blit(0, 4);
-    text_box(0, 26, 240, &FONT_P8, cur < USER ? FORMULA[cur].by : cur == RANDOM ? "made at random"
-             : cur == BLANK ? "a blank start" : "your patch", C_SOFT, 1);
+    if (side) {
+        n = put(s, 0, "right: ");
+        copy_str(s + n, r_name, 11);
+        text_box(0, 26, 240, &FONT_P8, s, C_CYAN, 1);
+    } else
+        text_box(0, 26, 240, &FONT_P8, cur < USER ? FORMULA[cur].by : cur == RANDOM ? "made at random"
+                 : cur == BLANK ? "a blank start" : "your patch", C_SOFT, 1);
     cv_begin(240, 48, C_BG);
     for (i = 0; i < len && i < 90u; i++) {      /* each line centred */
         uint32_t line = i / 30u, w = len - line * 30u > 30u ? 30u : len - line * 30u;
-        cv_formula_char((int32_t)(240u - w * 8u) / 2 + (int32_t)(i % 30u) * 8, (int32_t)line * 16, work, i);
+        cv_formula_char((int32_t)(240u - w * 8u) / 2 + (int32_t)(i % 30u) * 8, (int32_t)line * 16, f, i);
     }
     cv_blit(0, 38);
 }
@@ -569,7 +627,7 @@ static const uint8_t BANK_KNOB[2][4] = {{P_LSTART, P_LFINE, P_LLEN, P_LOOP}, {P_
 
 static uint32_t knob_param(uint32_t bank, uint32_t i)   /* P_N: none */
 {
-    return bank >= KNOBS_LOOP ? BANK_KNOB[bank - KNOBS_LOOP][i] : P_A + 4u * bank + i;
+    return bank >= KNOBS_LOOP ? BANK_KNOB[bank - KNOBS_LOOP][i] : (side ? P_RA : P_A) + 4u * bank + i;
 }
 
 static void knob_text(uint32_t bank, uint32_t i, char *name, char *d)   /* the knob's label and its value */
@@ -577,9 +635,10 @@ static void knob_text(uint32_t bank, uint32_t i, char *name, char *d)   /* the k
     static const char *const MODE[3] = {"OFF", "LOOP", "PING"};
     name[0] = (char)(bank == KNOBS_LOOP ? "SFLM"[i] : bank == KNOBS_VOICE ? "DO  "[i] : (int)('A' + 4u * bank + i));
     name[1] = 0;
+    if (side && bank < KNOBS_LOOP) { name[1] = name[0]; name[0] = 'R'; name[2] = 0; }   /* RA..RH */
     if (knob_param(bank, i) == P_N) d[0] = 0;
     else if (bank == KNOBS_VOICE) d[put(d, put_num(d, 0, (uint32_t)param[knob_param(bank, i)]), i ? "" : "c")] = 0;
-    else if (bank != KNOBS_LOOP) d[put_num(d, 0, (uint32_t)param[P_A + 4u * bank + i])] = 0;
+    else if (bank != KNOBS_LOOP) d[put_num(d, 0, (uint32_t)param[knob_param(bank, i)])] = 0;
     else if (i == 3u) d[put(d, 0, MODE[param[P_LOOP]])] = 0;
     else if (i == 2u && param[P_LLEN] >= 6) d[put(d, put_num(d, 0, 16u << param[P_LLEN] >> 10), "K")] = 0;
     else d[put_num(d, 0, i == 2u ? 16u << param[P_LLEN] : (uint32_t)param[i ? P_LFINE : P_LSTART])] = 0;
@@ -595,7 +654,7 @@ static void draw_knobs(uint32_t bank, uint32_t y)   /* the main screen's: four c
     uint32_t i;
     cv_begin(240, 32, C_BG);
     for (i = 0; i < 4u; i++) {
-        char name[2], d[8];
+        char name[3], d[8];
         int32_t x = (int32_t)i * 60 + 3;
         uint16_t c = knob_colour(bank, i);
         knob_text(bank, i, name, d);
@@ -611,7 +670,7 @@ static void draw_knobs_line(uint32_t bank, uint32_t y)   /* the editor's: one 16
     uint32_t i;
     cv_begin(240, 16, C_BG);
     for (i = 0; i < 4u; i++) {
-        char name[2], d[8];
+        char name[3], d[8];
         int32_t x = (int32_t)i * 60 + 6;
         knob_text(bank, i, name, d);
         cv_text(x, 5, &FONT_P8, name, knob_colour(bank, i));
@@ -644,10 +703,10 @@ static uint32_t rast_row[64];                   /* the row of t each holds (row 
 
 static void draw_view(uint32_t view, int fresh) /* fresh: the formula or a variable changed, the kept rows are old */
 {
-    const bb_prog_t *p = prog_live;
+    const bb_prog_t *p = prog_live[side];
     int32_t var[BB_VARS];
-    uint32_t i, x, t = t_now;
-    for (i = 0; i < BB_VARS; i++) var[i] = param[P_A + i];
+    uint32_t i, x, t = t_now[side];
+    for (i = 0; i < BB_VARS; i++) var[i] = param[(side ? P_RA : P_A) + i];
     cv_begin(240, 72, C_BG);
     cv_rect(2, 0, 236, 1, C_FRAME); cv_rect(2, 71, 236, 1, C_FRAME);
     cv_rect(2, 0, 1, 72, C_FRAME); cv_rect(237, 0, 1, 72, C_FRAME);
@@ -691,6 +750,7 @@ static void draw_status(uint32_t note, int32_t oct, uint32_t glide, uint32_t loa
     i = put_num(s, i, glide);
     i = put(s, i, "  ");
     i = put(s, i, MODE_NAME[mode]);
+    if (side) i = put(s, i, " R");
     s[i] = 0;
     text_box(0, 204, 240, &FONT_S, s, C_SOFT, 1);
     i = put(s, 0, pick ? "KEYS PICK  DSP " : "KEYS PLAY  DSP ");
@@ -931,7 +991,7 @@ static uint32_t audition;                       /* the editor's C4 sounds */
 static uint32_t bank, held_turned, held_down;   /* the knobs' bank; SEQ, LFO: a knob turned while held, when pressed
                                                    (a tap, or a hold) */
 static uint32_t loop_last = LOOP_ON;            /* the loop mode a tap on SEQ turns on */
-static const uint8_t MODE_NEXT[MODES] = {MODE_DUAL, MODE_POLY, MODE_MONO, MODE_MONO};   /* a tap on LFO */
+static const uint8_t MODE_NEXT[MODES] = {MODE_DUAL, MODE_POLY, MODE_MULTI, MODE_MONO};   /* a tap on LFO */
 
 static void changed(void) { dirty = 1; t_change = fm1_ms; }
 
@@ -986,9 +1046,18 @@ static void main_input(uint32_t b, uint32_t rel)
     if (b & (1u << BTN_SEL)) { set.pick ^= 1u; changed(); }
     if (b & (1u << BTN_FX)) { set.view = (uint8_t)((set.view + 1u) % VIEWS); changed(); }
     if (b & (1u << BTN_SAVE)) save_open();
-    if (b & (1u << BTN_EDIT)) { cpos = text_len(work); screen(SCR_EDIT); }
-    if ((n = fm1_enc_take(ENC_PRESETS))) pick(patch_step(cur, n));
-    if (knobs_input(b, rel) & 1u << BTN_LFO) mode_set(MODE_NEXT[vmode]);   /* (the patch's: saved with it) */
+    if (b & (1u << BTN_EDIT)) { side = 0; cpos = text_len(work); screen(SCR_EDIT); }   /* (it edits the left) */
+    if (b & (1u << BTN_PLAY) && vmode == MODE_MULTI) { side ^= 1u; patch_seq++; }
+    if ((n = fm1_enc_take(ENC_PRESETS))) {
+        if (side) { right_pick(patch_step(r_cur, n)); patch_seq++; }
+        else pick(patch_step(cur, n));
+    }
+    if (knobs_input(b, rel) & 1u << BTN_LFO) {  /* the next mode (the patch's: saved with it) */
+        if (MODE_NEXT[vmode] == MODE_MULTI) right_copy(patch_name(cur));
+        mode_set(MODE_NEXT[vmode]);
+        side = 0;
+        patch_seq++;
+    }
     if ((n = fm1_enc_take(ENC_SELECT))) {
         param_set(P_GLIDE, param[P_GLIDE] + n);
         set.glide = (uint8_t)param[P_GLIDE];
@@ -1086,7 +1155,7 @@ static void app_main(void)
     uint32_t t_view = 0, view_t = ~0u, view_shown = ~0u, view_fresh = 1;
     uint32_t cpos_drawn = ~0u, layer_drawn = ~0u;   /* the editor's */
     char text_drawn[TEXT_MAX + 1u] = {0}, name_drawn[sizeof name];   /* (name_drawn: set apart on each screen) */
-    int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[BB_VARS] = {0};
+    int32_t v_drawn[4] = {-1, -1, -1, -1}, v_seen[2u * BB_VARS] = {0};
     uint8_t key_note[27] = {0};                 /* the note each key started */
     lib_init();
     settings_default(&set);
@@ -1156,7 +1225,7 @@ static void app_main(void)
         fm1_led_key(BTN_SAVE, scr == SCR_SAVE || scr == SCR_NAME);
         fm1_led_key(BTN_ENV, clearing);
         fm1_led_key(BTN_EDIT, scr == SCR_EDIT);
-        fm1_led_key(BTN_PLAY, audition);
+        fm1_led_key(BTN_PLAY, scr == SCR_EDIT ? audition : side);
         fm1_led_key(BTN_FX, scr == SCR_EDIT && fm1_in.buttons >> BTN_FX & 1u);
         fm1_led_key(BTN_REC, learn);
         fm1_led_key(BTN_HOME, bank == KNOBS_EH);
@@ -1178,7 +1247,11 @@ static void app_main(void)
             memset(name_drawn, 0xFF, sizeof name_drawn);   /* (no name looks like that: drawn whatever it is) */
         }
         for (k = 0; k < BB_VARS; k++)           /* any of a..h changed: the views show something else */
-            if (param[P_A + k] != v_seen[k]) { v_seen[k] = param[P_A + k]; view_fresh = 1; view_t = ~0u; }
+            if (param[(side ? P_RA : P_A) + k] != v_seen[k + BB_VARS * side]) {
+                v_seen[k + BB_VARS * side] = param[(side ? P_RA : P_A) + k];
+                view_fresh = 1;
+                view_t = ~0u;
+            }
         if (scr == SCR_CC) {
             if (learn != head_drawn) {
                 head_drawn = learn;
@@ -1225,7 +1298,7 @@ static void app_main(void)
         } else {
             for (k = 0; k < 4u; k++) v[k] = knob_param(bank, k) == P_N ? -2 : param[knob_param(bank, k)];
             st_now = (uint32_t)(set.oct + 2) + 5u * (uint32_t)param[P_GLIDE] + 55u * set.pick + 110u * load
-                   + 11110u * vmode;
+                   + 11110u * vmode + 44440u * side;
             if (patch_seq != p_drawn) { p_drawn = patch_seq; draw_patch(); view_fresh = 1; view_t = ~0u; }
             if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3] || bank != bank_drawn) {
                 for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
@@ -1233,9 +1306,9 @@ static void app_main(void)
                 draw_knobs(bank, 164);
             }
             if (set.view != view_shown) { view_shown = set.view; view_t = ~0u; }
-            if (fm1_ms - t_view >= 40u && t_now != view_t) {
+            if (fm1_ms - t_view >= 40u && t_now[side] != view_t) {
                 t_view = fm1_ms;                /* 25 frames a second, while t moves or what it shows changed */
-                view_t = t_now;
+                view_t = t_now[side];
                 draw_view(set.view, (int)view_fresh);
                 view_fresh = 0;
             }

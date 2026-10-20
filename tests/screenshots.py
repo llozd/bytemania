@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "build/host/shots"
 DOCS = ROOT / "docs/screens"
 # buttons and encoders, as platform.c numbers them
-OCT_DOWN, FX, ENV, EDIT, GLO, HOME, SAVE, ARP, SEQ, PLAY, REC = 0, 2, 4, 6, 7, 8, 9, 10, 11, 12, 13
+OCT_DOWN, FX, ENV, LFO, EDIT, GLO, HOME, SAVE, ARP, SEQ, PLAY, REC = 0, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
 SELECT, KNOB1, KNOB2, KNOB3, KNOB4, PRESETS = 0, 2, 3, 4, 5, 6
 C4 = 1 << 7                                     # key 7
 
@@ -55,6 +55,9 @@ SHOTS = {
     "raster": Script().btn(FX).keys(C4).shot(2400),
     "waves": Script().enc(PRESETS, -7).keys(C4).shot(),                       # 11 FIRST -> 04 SINE
     "knobs-eh": Script().hold(1 << HOME).enc(KNOB1, 40).enc(KNOB2, 7).enc(KNOB3, 3).enc(KNOB4, 90).keys(C4).shot(),
+    "dual": Script().hold(1 << LFO).hold(0).keys(C4).hold(1 << LFO).enc(KNOB1, 12).enc(KNOB2, 40).shot(),
+    "multi": Script().enc(PRESETS, -10).hold(1 << LFO).hold(0).hold(1 << LFO).hold(0).hold(1 << LFO).hold(0)
+                     .btn(PLAY).enc(PRESETS, 1).enc(KNOB3, -64).keys(C4).shot(),
     "loop": Script().keys(C4).hold(1 << SEQ).enc(KNOB4, 2).enc(KNOB3, -2).enc(KNOB1, 1).shot(2400),
     "cc": Script().btn(GLO).enc(KNOB1, 75).enc(SELECT, 1).enc(KNOB1, 72).enc(SELECT, 1).enc(KNOB1, 2)
                   .enc(KNOB4, -128).enc(SELECT, -1).ev("midi 0xB0 74 100").ev("midi 0xB0 71 30").shot(300),
