@@ -4,7 +4,7 @@
  *
  *   keys       play the note (mono, the last key wins); with SEL lit, pick a formula instead
  *   SEL        the keys: play / pick a formula
- *   FX         the view: scope / raster
+ *   FX         the view: raster / scope
  *   GLO        the CC screen (and back)
  *   EDIT       the editor (and back)
  *   SAVE       the save screen: what plays, into one of 64 user slots
@@ -967,7 +967,7 @@ static void settings_default(settings_t *s)
     memset(s, 0, sizeof *s);
     s->magic = 'C';
     s->patch = FIRST_PATCH;
-    s->view = VIEW_SCOPE;
+    s->view = VIEW_RASTER;
     for (i = 0; i < NMAP; i++) {                /* off; given a CC, slot 1 moves a, 2 b ... 9 glide, 10 volume */
         s->map[i].cc = CC_OFF;
         map_reset(&s->map[i], i < P_N ? i : 0u);
@@ -988,7 +988,7 @@ static void settings_check(settings_t *s)       /* what a power-off or another v
     if (s->glide > 10u) s->glide = 0;
     if (s->oct < -2 || s->oct > 2) s->oct = 0;
     s->pick = !!s->pick;
-    if (s->view >= VIEWS) s->view = VIEW_SCOPE;
+    if (s->view >= VIEWS) s->view = VIEW_RASTER;
 }
 
 /* ---- the panel and the screens */

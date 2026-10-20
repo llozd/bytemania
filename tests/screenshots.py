@@ -51,14 +51,14 @@ class Script:
 
 
 SHOTS = {
-    "main": Script().keys(C4).shot(),
-    "raster": Script().btn(FX).keys(C4).shot(2400),
-    "waves": Script().enc(PRESETS, -7).keys(C4).shot(),                       # 11 FIRST -> 04 SINE
-    "knobs-eh": Script().hold(1 << HOME).enc(KNOB1, 40).enc(KNOB2, 7).enc(KNOB3, 3).enc(KNOB4, 90).keys(C4).shot(),
-    "dual": Script().hold(1 << LFO).hold(0).keys(C4).hold(1 << LFO).enc(KNOB1, 12).enc(KNOB2, 40).shot(),
+    "main": Script().keys(C4).shot(4000),
+    "scope": Script().btn(FX).keys(C4).shot(),
+    "waves": Script().enc(PRESETS, -7).keys(C4).shot(4000),                       # 11 FIRST -> 04 SINE
+    "knobs-eh": Script().hold(1 << HOME).enc(KNOB1, 40).enc(KNOB2, 7).enc(KNOB3, 3).enc(KNOB4, 90).keys(C4).shot(4000),
+    "dual": Script().hold(1 << LFO).hold(0).keys(C4).hold(1 << LFO).enc(KNOB1, 12).enc(KNOB2, 40).shot(4000),
     "multi": Script().enc(PRESETS, -10).hold(1 << LFO).hold(0).hold(1 << LFO).hold(0).hold(1 << LFO).hold(0)
-                     .btn(PLAY).enc(PRESETS, 1).enc(KNOB3, -64).keys(C4).shot(),
-    "loop": Script().keys(C4).hold(1 << SEQ).enc(KNOB4, 2).enc(KNOB3, -2).enc(KNOB1, 1).shot(2400),
+                     .btn(PLAY).enc(PRESETS, 1).enc(KNOB3, -64).keys(C4).shot(4000),
+    "loop": Script().btn(FX).keys(C4).hold(1 << SEQ).enc(KNOB4, 2).enc(KNOB3, -2).enc(KNOB1, 1).shot(4000),
     "cc": Script().btn(GLO).enc(KNOB1, 75).enc(SELECT, 1).enc(KNOB1, 72).enc(SELECT, 1).enc(KNOB1, 2)
                   .enc(KNOB4, -128).enc(SELECT, -1).ev("midi 0xB0 74 100").ev("midi 0xB0 71 30").shot(300),
     "cc-learn": Script().btn(GLO).btn(REC).shot(300),
