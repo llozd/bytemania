@@ -81,23 +81,43 @@ static int settings_save(const void *p, uint32_t n)
     return 0;
 }
 
-#define LIB_SECTORS 2u                          /* the library: as platform.c, in memory */
+#define LIB_SECTORS 4u                          /* the library: as platform.c, in memory */
 #define LIB_MAX (0x1000u - 12u)
 static uint8_t host_lib[LIB_SECTORS][LIB_MAX];
-static uint32_t host_lib_n[LIB_SECTORS];
-static int lib_load(uint32_t k, void *p, uint32_t n)
+static uint32_t host_lib_n[LIB_SECTORS], host_lib_magic[LIB_SECTORS];
+static int lib_load(uint32_t k, uint32_t magic, void *p, uint32_t n)
 {
-    if (k >= LIB_SECTORS || host_lib_n[k] != n) return -1;
+    if (k >= LIB_SECTORS || host_lib_n[k] != n || host_lib_magic[k] != magic) return -1;
     memcpy(p, host_lib[k], n);
     return 0;
 }
-static int lib_save(uint32_t k, const void *p, uint32_t n)
+static int lib_save(uint32_t k, uint32_t magic, const void *p, uint32_t n)
 {
     if (k >= LIB_SECTORS || n > LIB_MAX) return -1;
     memcpy(host_lib[k], p, n);
     host_lib_n[k] = n;
+    host_lib_magic[k] = magic;
     printf("%6u ms  library sector %u saved (%u B)\n", fm1_ms, k, n);
     return 0;
+}
+
+/* HOST_LIB=file keeps the library between runs (a power-off, as the FM-1 would see it): per sector its magic, its
+ * length and LIB_MAX bytes. Read before the app starts, written when the script ends. */
+static void host_lib_file(int write)
+{
+    const char *path = getenv("HOST_LIB");
+    FILE *f;
+    uint32_t k;
+    if (!path || !(f = fopen(path, write ? "wb" : "rb"))) return;
+    for (k = 0; k < LIB_SECTORS; k++) {
+        if (write) {
+            fwrite(&host_lib_magic[k], 4, 1, f); fwrite(&host_lib_n[k], 4, 1, f); fwrite(host_lib[k], 1, LIB_MAX, f);
+        } else if (fread(&host_lib_magic[k], 4, 1, f) != 1 || fread(&host_lib_n[k], 4, 1, f) != 1 ||
+                   fread(host_lib[k], 1, LIB_MAX, f) != LIB_MAX) {
+            host_lib_magic[k] = host_lib_n[k] = 0;
+        }
+    }
+    fclose(f);
 }
 
 static uint8_t mq[64][3];
@@ -252,12 +272,14 @@ static void platform_poll(void)                 /* one call = one millisecond */
         write_ppm(SHOT[shot++]);
     if (fm1_ms >= end_ms) {
         write_wav();
+        host_lib_file(1);
         exit(0);
     }
 }
 
 int main(int argc, char **argv)
 {
+    host_lib_file(0);
     if (argc > 1) host_out = argv[1];
     if (argc > 2) read_script(argv[2]);
     if (argc > 3) frame_fps = (uint32_t)atoi(argv[3]);

@@ -15,6 +15,7 @@ plays.
 - 64 user slots that keep the whole patch, with names
 - 8 variables (`a`-`h`) on the knobs, colour-coded in the formula
 - loop and ping-pong over any part of a formula
+- four voice modes: mono, a detuned stereo pair, 4-voice poly, and a different formula on each side
 - a scope and a raster view of the sound
 - USB-MIDI notes, pitch bend, and 12 CC mappings with learn
 
@@ -26,6 +27,7 @@ plays.
 - [Views](#views)
 - [Knobs and variables](#knobs-and-variables)
 - [Loop](#loop)
+- [Voice modes](#voice-modes)
 - [Built-in patches](#built-in-patches)
 - [The editor](#the-editor)
 - [Saving and naming](#saving-and-naming)
@@ -57,7 +59,7 @@ From the top:
 - the formula, with each variable in its own colour
 - the view: the waveform or the raster (see [Views](#views))
 - the four knobs, framed in the same colours as their variables in the formula
-- the note, octave and glide, whether the keys play or pick, and how busy the audio is (DSP %)
+- the note, octave, glide and voice mode, whether the keys play or pick, and how busy the audio is (DSP %)
 
 ## Playing
 
@@ -68,6 +70,8 @@ From the top:
 | SELECT | glide, 0 (off) to 10 |
 | PRESETS | the patch: the 30 built-ins, then your saved slots |
 | SEL | switch the keys between playing and picking a patch. In pick mode, keys 1-27 pick built-ins 01-27 |
+| LFO | tap: the next voice mode. Hold: the knobs set DUAL's detune and offset (see [Voice modes](#voice-modes)) |
+| PLAY | in MULTI: switch between the left and right side |
 | MASTER | volume |
 | USB-MIDI | notes in on any channel, with velocity. Pitch bend is ±2 semitones and ignores glide, so bends are instant |
 
@@ -125,6 +129,27 @@ Hold **SEQ** and the knobs set the loop:
 
 A quick tap on SEQ switches the loop on or off, keeping the last mode. SEQ is lit while a loop is on. A note plays from
 `t = 0` until it reaches the start, then loops. Short loops (16-256 steps) turn a formula into a grainy, buzzing tone.
+
+## Voice modes
+
+<p align="center">
+  <img src="docs/screens/dual.png" width="240" alt="DUAL, with LFO held">
+  <img src="docs/screens/multi.png" width="240" alt="MULTI, showing the right side">
+</p>
+
+A tap on **LFO** steps through four voice modes. LFO is lit in any mode but MONO, and the status line shows which.
+The mode is part of the patch: saving keeps it, and built-ins start in MONO.
+
+| Mode | |
+| --- | --- |
+| MONO | one note at a time, with glide |
+| DUAL | the formula twice, left and right. Hold **LFO** and KNOB1 detunes the right side (0-100 cents) and KNOB2 starts it further along in `t` (0-255, in steps of 16), for width, chorus and phasing |
+| POLY | up to 4 notes, each running its own `t`. No glide. Each note is half as loud as in MONO, so chords don't clip as much |
+| MULTI | a different formula on each side, both playing the note. Each side has its own `a`-`h` |
+
+In MULTI, the right side starts as a copy of the left. **PLAY** switches which side the screen shows (PLAY is lit for
+the right). With the right side shown, **PRESETS** picks its formula from the built-ins and your slots, and the
+knobs set its variables, labelled `RA`-`RH`. The editor always edits the left side.
 
 ## Built-in patches
 
@@ -219,7 +244,8 @@ before you hear it, and anything silent, stuck or pure noise is thrown away and 
 </p>
 
 **SAVE** (on the main screen or in the editor) opens the save screen on the slot that's playing, or the first free one.
-There are 64 slots. A slot keeps the whole patch: the formula, `a`-`h`, the loop and glide.
+There are 64 slots. A slot keeps the whole patch: the formula, `a`-`h`, the loop, glide and the voice mode, with
+DUAL's detune and offset or MULTI's right side.
 
 | | |
 | --- | --- |
@@ -239,7 +265,8 @@ back to the slots. Saved slots come after the built-ins on **PRESETS**.
 </p>
 
 **GLO** opens the CC screen: 12 slots, each mapping a MIDI CC (on any channel) to a parameter over a min-max range.
-Targets are `a`-`h`, glide, volume and the four loop settings. Setting min above max inverts the control. The NOW
+Targets are `a`-`h`, glide, volume, the four loop settings, DUAL's detune and offset, and MULTI's right-side
+variables (`RA`-`RH`). Setting min above max inverts the control. The NOW
 column shows the parameter's value as it moves. Mappings are saved.
 
 | | |

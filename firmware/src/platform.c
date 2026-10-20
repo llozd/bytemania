@@ -70,7 +70,7 @@ static volatile uint32_t fm1_ms;                /* milliseconds since power-on (
  * library (Bytemania's user formulas: the start of Felucca's main store, which other firmwares may also use) */
 #define SETTINGS_AT 0x000FC000u                 /* one 4 KiB sector of Felucca's globals area */
 #define LIB_AT 0x00097000u
-#define LIB_SECTORS 2u
+#define LIB_SECTORS 4u
 #define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_AT + 0x1000u) || \
                              FL_IN(off, n, LIB_AT, LIB_AT + LIB_SECTORS * 0x1000u))
 #include "fm1_flash.h"
@@ -175,21 +175,22 @@ static int settings_save(const void *p, uint32_t n)   /* p in RAM, n <= 256 */
 }
 
 /* ---- the library: LIB_SECTORS sectors from LIB_AT, each as the settings: [magic][length][crc32] then the bytes.
- * Another firmware's data there has no magic or a wrong CRC: it reads as empty. */
-#define LIB_MAGIC 0x4D545942u                   /* "BYTM" */
+ * The magic is the app's (a format of its own). Another firmware's data there has no such magic or a wrong CRC: it
+ * reads as empty. */
 #define LIB_MAX (0x1000u - 12u)                 /* the bytes a sector holds */
-static int lib_load(uint32_t k, void *p, uint32_t n)   /* sector k; 0: loaded; else p may be changed: start it afresh */
+static int lib_load(uint32_t k, uint32_t magic, void *p, uint32_t n)   /* 0: loaded; else p may be changed */
 {
     uint32_t h[3], at = LIB_AT + k * 0x1000u;
-    if (!flash_ok || k >= LIB_SECTORS || n > LIB_MAX || st_read(at, h, sizeof h) || h[0] != LIB_MAGIC || h[1] != n)
+    if (!flash_ok || k >= LIB_SECTORS || n > LIB_MAX || st_read(at, h, sizeof h) || h[0] != magic || h[1] != n)
         return -1;
     if (st_read(at + sizeof h, p, n) || crc32(p, n) != h[2])
         return -1;
     return 0;
 }
-static int lib_save(uint32_t k, const void *p, uint32_t n)   /* p in RAM; erases the sector: save when nothing plays */
+static int lib_save(uint32_t k, uint32_t magic, const void *p, uint32_t n)   /* p in RAM; erases the sector: save when
+                                                                              nothing plays */
 {
-    uint32_t h[3] = {LIB_MAGIC, n, 0}, at = LIB_AT + k * 0x1000u, took;
+    uint32_t h[3] = {magic, n, 0}, at = LIB_AT + k * 0x1000u, took;
     int rc;
     if (!flash_ok || k >= LIB_SECTORS || n > LIB_MAX)
         return -1;
