@@ -983,7 +983,7 @@ static void draw_env(void)
     cv_line(x2, y_sustain, x3, y_sustain, C_TEXT);
     cv_line(x3, y_sustain, x4, y_base, C_PINK);
 
-    cv_blit(0, 180);
+    cv_blit(0, 80);
 }
 
 /* ---- the editor's screen: the formula with the cursor, whether it compiles, the keys' tokens, the knobs, help */
