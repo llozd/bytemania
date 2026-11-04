@@ -148,7 +148,7 @@ static void app_audio(int32_t *out, uint32_t n)
         uint32_t side = mode == MODE_MULTI ? k : 0u;   /* MULTI: the right lane plays the right side */
         const bb_prog_t *p = side_p[side];
         int32_t g = voice[src].gate, amp, s;
-        int32_t sustain_target = (g * 256) / param[P_SUSTAIN];
+        int32_t sustain_target = (g * param[P_SUSTAIN]) / 256;
         if (ln[k].seq != voice[src].seq) {     /* t from 0; DUAL's right side ahead by its offset */
             ln[k].seq = voice[src].seq;
             ln[k].pos = ln[k].t = mode == MODE_DUAL && k ? 16u * (uint32_t)param[P_OFFSET] : 0u;
@@ -408,10 +408,10 @@ static void right_copy(const char *name)        /* the left side as it plays, as
     r_cur = cur;
 }
 
-#define DEFAULT_ATTACK 208
+#define DEFAULT_ATTACK 80
 #define DEFAULT_DECAY 0
 #define DEFAULT_SUSTAIN 255
-#define DEFAULT_RELEASE 250
+#define DEFAULT_RELEASE 122
 
 static void patch_pick(uint32_t p)
 {
@@ -963,10 +963,10 @@ static void draw_env(void)
     }
 
     cv_blit(0, 40);
-    cv_begin(240, 100, C_BG);
+    cv_begin(240, 72, C_BG);
 
     /* Draw envelope shape visualization */
-    int32_t y_base = 99, y_peak = 0;
+    int32_t y_base = 71, y_peak = 0;
     int32_t total = a + d + 100 + r;
     if (total == 0) total = 1;
 
@@ -983,7 +983,7 @@ static void draw_env(void)
     cv_line(x2, y_sustain, x3, y_sustain, C_TEXT);
     cv_line(x3, y_sustain, x4, y_base, C_PINK);
 
-    cv_blit(0, 92);
+    cv_blit(0, 105);
 }
 
 /* ---- the editor's screen: the formula with the cursor, whether it compiles, the keys' tokens, the knobs, help */

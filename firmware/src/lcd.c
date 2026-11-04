@@ -90,14 +90,8 @@ static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint1
 {
     if (!w || !h)
         return;
-    while (h) {
-        uint32_t rows = h > 72u ? 72u : h;
-        lcd_window(x, y, x + w - 1u, y + rows - 1u);
-        lcd_data(px, w * rows * 2u);
-        px += w * rows;
-        y  += rows;
-        h  -= rows;
-    }
+    lcd_window(x, y, x + w - 1u, y + h - 1u);
+    lcd_data(px, w * h * 2u);
 }
 
 /* ST7789V init: reset, then 16-bit colour, scan direction and IPS inversion;
