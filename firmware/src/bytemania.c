@@ -14,6 +14,7 @@
  *   LFO        tap: the voice mode: MONO, DUAL (left and right, the right detuned and offset), POLY (4 voices, no
  *              glide), MULTI (a formula each side, with a..h each); kept with the patch. Held, the knobs are
  *              DUAL's detune and offset, and DUAL's and MULTI's width
+ *   ENV        change amp envelope ADSR
  *   PLAY       MULTI: which side the screen shows and the knobs and PRESETS change (lit: the right)
  *   SELECT     the glide
  *   OCT- OCT+  the octave
@@ -50,6 +51,7 @@
 enum { P_A, P_B, P_C, P_D, P_E, P_F, P_G, P_H, P_GLIDE, P_VOL, P_LOOP, P_LSTART, P_LFINE, P_LLEN, P_DETUNE, P_OFFSET,
        P_RA, P_RB, P_RC, P_RD, P_RE, P_RF, P_RG, P_RH,   /* MULTI: the right side's a..h */
        P_WIDTH,                                /* DUAL, MULTI: 100 the sides apart, 0 both in both channels */
+       P_ATTACK, P_DECAY, P_SUSTAIN, P_RELEASE,
        P_N };                                  /* (the CC mappings keep these numbers: new ones go at the end) */
 enum { LOOP_OFF, LOOP_ON, LOOP_PING };
 static const struct { int32_t min, max; } PARAM[P_N] = {
@@ -58,6 +60,7 @@ static const struct { int32_t min, max; } PARAM[P_N] = {
     {0, 100}, {0, 255},                         /* DUAL: the right side's detune (cents), t offset (16 steps) */
     {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255}, {0, 255},
     {0, 100},
+    {0, 255}, {0, 255}, {0, 255}, {0, 255},
 };
 static volatile int32_t param[P_N];
 
@@ -108,10 +111,16 @@ static uint32_t loop_t(uint32_t pos, uint32_t mode, uint32_t start, uint32_t len
     return start + (off < len ? off : 2u * len - 1u - off);      /* ping: the second half runs back */
 }
 
+enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN };
+
+#define ENV_RATE(p, i) \
+    ((p) <= 127 ? (128 - (p)) : ((i % ((p) - 126)) == 0 ? 1 : 0))
+
 static void app_audio(int32_t *out, uint32_t n)
 {
-    static struct { uint32_t pos, t, frac, inc, seq; int32_t amp, s; } ln[NV];   /* pos: steps since the note began;
-                                                                                    t: where the loop puts it */
+    static struct { uint32_t pos, t, frac, inc, seq; int32_t amp, s; uint8_t env; } ln[NV];
+    /* pos: steps since the note began; t: where the loop puts it */
+
     const bb_prog_t *side_p[2] = {prog_live[0], prog_live[1]};
     int32_t var[2][BB_VARS], vol = param[P_VOL];
     uint32_t mode = vmode, lanes = mode == MODE_POLY ? NV : mode == MODE_MONO ? 1u : 2u, k, i, t0 = fm1_ticks();
@@ -129,16 +138,19 @@ static void app_audio(int32_t *out, uint32_t n)
     for (k = 0; k < lanes; k++) {
         uint32_t src = mode == MODE_POLY ? k : 0u, target = voice[src].inc, pos, t, frac, inc, step;
         uint32_t mul = mode == MODE_DUAL && k ? bm_r : bm;
-        int32_t gl = lanes == 2u && k ? g_other : g_own, gr = lanes == 2u && !k ? g_other : g_own;   /* lane 0 is
-                                                                                   the left, 1 the right */
+        int32_t gl = lanes == 2u && k ? g_other : g_own, gr = lanes == 2u && !k ? g_other : g_own;
+        /* lane 0 is the left, 1 the right */
+
         uint32_t side = mode == MODE_MULTI ? k : 0u;   /* MULTI: the right lane plays the right side */
         const bb_prog_t *p = side_p[side];
         int32_t g = voice[src].gate, amp, s;
+        int32_t sustain_target = (g * 256) / param[P_SUSTAIN];
         if (ln[k].seq != voice[src].seq) {     /* t from 0; DUAL's right side ahead by its offset */
             ln[k].seq = voice[src].seq;
             ln[k].pos = ln[k].t = mode == MODE_DUAL && k ? 16u * (uint32_t)param[P_OFFSET] : 0u;
             ln[k].frac = 0;
             ln[k].inc = target;
+            ln[k].env = ENV_ATTACK;
         }
         pos = ln[k].pos; t = ln[k].t; frac = ln[k].frac; inc = ln[k].inc; amp = ln[k].amp; s = ln[k].s;
         if (!amp && !g) continue;               /* silent: costs nothing */
@@ -157,8 +169,24 @@ static void app_audio(int32_t *out, uint32_t n)
                 frac &= 0xFFFFu;
                 s = ((bb_run(p, t, var[side]) & 255) - 128) * 256;
             }
-            if (amp < g) { amp += 48; if (amp > g) amp = g; }        /* attack ~10 ms */
-            else if (amp > g) { amp -= 6; if (amp < g) amp = g; }    /* release ~100 ms */
+
+            if (ln[k].env == ENV_ATTACK && amp < g) {
+                amp += ENV_RATE(param[P_ATTACK], i);
+                if (amp > g) {
+                    amp = g;
+                    ln[k].env == ENV_DECAY;
+                }
+            } else if (ln[k].env == ENV_DECAY && g) {
+                amp -= ENV_RATE(param[P_DECAY], i);
+                if (amp <= sustain_target) {
+                    amp = sustain_target;
+                    ln[k].env = ENV_SUSTAIN;
+                }
+            } else if (amp > g) {
+                amp -= ENV_RATE(param[P_RELEASE], i);
+                if (amp < g) amp = g;
+            }
+
             v = (s * ((amp * vol) >> 7)) >> 15;
             out[2u * i] += (v * gl) >> 15;      /* L */
             out[2u * i + 1u] += (v * gr) >> 15; /* R */
@@ -275,7 +303,7 @@ typedef struct {
     char name[12], text[TEXT_MAX + 2u];         /* both 0-terminated */
     uint8_t var[BB_VARS], loop, lstart, lfine, llen, glide, used, mode, detune, offset;
     char r_name[12], r_text[TEXT_MAX + 2u];     /* MULTI: the right side */
-    uint8_t r_var[BB_VARS], width, pad[6];      /* (width + 1: 0, from v1.0, reads as 50) */
+    uint8_t r_var[BB_VARS], width, attack, decay, sustain, release, pad[2];      /* (width + 1: 0, from v1.0, reads as 50) */
 } slot_t;
 typedef char slot_size_is_240[sizeof(slot_t) == 240u ? 1 : -1];   /* (16 to a sector; the format on flash) */
 static slot_t lib[SLOTS] __attribute__((section(".pool")));
@@ -373,6 +401,11 @@ static void right_copy(const char *name)        /* the left side as it plays, as
     r_cur = cur;
 }
 
+#define DEFAULT_ATTACK 208
+#define DEFAULT_DECAY 0
+#define DEFAULT_SUSTAIN 255
+#define DEFAULT_RELEASE 250
+
 static void patch_pick(uint32_t p)
 {
     uint32_t i;
@@ -380,6 +413,10 @@ static void patch_pick(uint32_t p)
         copy_str(work, FORMULA[p].text, TEXT_MAX);
         for (i = 0; i < BB_VARS; i++) param_set(P_A + i, i < 4u ? FORMULA[p].def[i] : 0);
         param_set(P_DETUNE, 0); param_set(P_OFFSET, 0); param_set(P_WIDTH, 50);
+        param_set(P_ATTACK, DEFAULT_ATTACK);
+        param_set(P_DECAY, DEFAULT_DECAY);
+        param_set(P_SUSTAIN, DEFAULT_SUSTAIN);
+        param_set(P_RELEASE, DEFAULT_RELEASE);
         if (vmode != MODE_MONO) mode_set(MODE_MONO);
     } else {
         const slot_t *s = &lib[p - USER];
@@ -388,6 +425,7 @@ static void patch_pick(uint32_t p)
         param_set(P_LOOP, s->loop); param_set(P_LSTART, s->lstart); param_set(P_LFINE, s->lfine);
         param_set(P_LLEN, s->llen); param_set(P_GLIDE, s->glide);
         param_set(P_DETUNE, s->detune); param_set(P_OFFSET, s->offset); param_set(P_WIDTH, s->width ? s->width - 1 : 50);
+        param_set(P_ATTACK, s->attack); param_set(P_DECAY, s->decay); param_set(P_SUSTAIN, s->sustain); param_set(P_RELEASE, s->release);
         if (vmode != s->mode) mode_set(s->mode);
         if (s->mode == MODE_MULTI && s->r_text[0]) { right_set(s->r_name, s->r_text, s->r_var, 0); r_cur = p; }
     }
@@ -422,6 +460,10 @@ static void patch_blank(void)                   /* INIT: t alone, the variables 
     for (i = 0; i < BB_VARS; i++) param_set(P_A + i, 0);
     param_set(P_LOOP, LOOP_OFF);
     param_set(P_GLIDE, 0);
+    param_set(P_ATTACK, DEFAULT_ATTACK);
+    param_set(P_DECAY, DEFAULT_DECAY);
+    param_set(P_SUSTAIN, DEFAULT_SUSTAIN);
+    param_set(P_RELEASE, DEFAULT_RELEASE);
     if (vmode != MODE_MONO) mode_set(MODE_MONO);
     formula_load(work, 0);
     cur = BLANK;
@@ -453,6 +495,10 @@ static void patch_save(uint32_t k, const char *name)   /* what plays now, into s
     s->llen = (uint8_t)param[P_LLEN]; s->glide = (uint8_t)param[P_GLIDE];
     s->mode = (uint8_t)vmode; s->detune = (uint8_t)param[P_DETUNE]; s->offset = (uint8_t)param[P_OFFSET];
     s->width = (uint8_t)(param[P_WIDTH] + 1);
+    s->attack = (uint8_t)param[P_ATTACK];
+    s->decay = (uint8_t)param[P_DECAY];
+    s->sustain = (uint8_t)param[P_SUSTAIN];
+    s->release = (uint8_t)param[P_RELEASE];
     if (vmode == MODE_MULTI) {
         copy_str(s->r_name, r_name, sizeof s->r_name - 1u);
         copy_str(s->r_text, r_text, TEXT_MAX);
@@ -787,7 +833,8 @@ static int32_t knob(uint32_t enc)               /* detents, 8x when turned fast 
 #define CC_OFF 128u
 typedef struct { uint8_t cc, target; int16_t min, max; } ccmap_t;
 static const char *const PNAME[] = {"A", "B", "C", "D", "E", "F", "G", "H", "GLIDE", "VOL", "LOOP", "START", "FINE", "LEN",
-                                    "DETUN", "OFFS", "RA", "RB", "RC", "RD", "RE", "RF", "RG", "RH", "WIDTH"};
+                                    "DETUN", "OFFS", "RA", "RB", "RC", "RD", "RE", "RF", "RG", "RH", "WIDTH",
+                                    "A", "D", "S", "R"};
 typedef char pname_has_every_param[sizeof PNAME / sizeof PNAME[0] == P_N ? 1 : -1];   /* (a CC screen row each) */
 
 static void cc_in(const ccmap_t *map, uint32_t cc, uint32_t val)
@@ -885,6 +932,50 @@ static void draw_name(const char *name)         /* the name screen: the name as 
     cv_blit(0, 96);
 }
 
+static void draw_env(void)
+{
+    uint32_t i;
+    int32_t a = (int32_t)param[P_ATTACK];
+    int32_t d = (int32_t)param[P_DECAY];
+    int32_t s = (int32_t)param[P_SUSTAIN];
+    int32_t r = (int32_t)param[P_RELEASE];
+
+    cv_begin(240, 100, C_BG);
+
+    for (i = 0; i < 4u; i++) {
+        char name[2], d_str[8];
+        int32_t x = (int32_t)i * 60 + 3;
+        uint16_t c = C_VAR[i];
+        name[0] = "ADSR"[i];
+        name[1] = 0;
+        d_str[put_num(d_str, 0, (uint32_t)param[P_ATTACK + i])] = 0;
+        cv_rect(x, 0, 54, 1, c); cv_rect(x, 31, 54, 1, c); 
+        cv_rect(x, 0, 1, 32, c); cv_rect(x + 53, 0, 1, 32, c);
+        cv_text(x + 4, 4, &FONT_P8, name, c);
+        cv_text(x + 50 - text_w(&FONT_S, d_str), 14, &FONT_S, d_str, C_TEXT);
+    }
+
+    /* Draw envelope shape visualization */
+    int32_t y_base = 90, y_peak = 40;
+    int32_t total = a + d + 100 + r;
+    if (total == 0) total = 1;
+
+    int32_t x0 = 10;
+    int32_t x1 = x0 + a * 220 / total;
+    int32_t x2 = x1 + d * 220 / total;
+    int32_t x3 = x2 + 100 * 220 / total;
+    int32_t x4 = x3 + r * 220 / total;
+
+    int32_t y_sustain = y_peak + (255 - s) * (y_base - y_peak) / 255;
+
+    cv_line(x0, y_base, x1, y_peak, C_PINK);
+    cv_line(x1, y_peak, x2, y_sustain, C_CYAN);
+    cv_line(x2, y_sustain, x3, y_sustain, C_TEXT);
+    cv_line(x3, y_sustain, x4, y_base, C_PINK);
+
+    cv_blit(0, 80);
+}
+
 /* ---- the editor's screen: the formula with the cursor, whether it compiles, the keys' tokens, the knobs, help */
 static void draw_edit_title(void)
 {
@@ -957,9 +1048,13 @@ static const legend_t EDIT_HELP[8] = {
     {"ENV", "blank"}, {"PLAY", "hear C4"}, {"SAVE", "save"}, {"EDIT", "close"}};
 static const legend_t SAVE_HELP[3] = {{"SAVE", "name it"}, {"ENV", "clear"}, {"HOME", "back"}};
 static const legend_t NAME_HELP[3] = {{"OCT-", "delete"}, {"SAVE", "save"}, {"HOME", "back"}};
+static const legend_t ENV_HELP[2] = {{"ENV", "back"}, {"HOME", "back"}};
 
 /* ---- the settings: what survives a power-off */
-typedef struct { uint8_t magic, patch, glide, pick, view; int8_t oct; ccmap_t map[NMAP]; } settings_t;
+typedef struct {
+    uint8_t magic, patch, glide, pick, view, attack, decay, sustain, release;
+    int8_t oct;
+    ccmap_t map[NMAP]; } settings_t;
 
 static void settings_default(settings_t *s)
 {
@@ -968,6 +1063,10 @@ static void settings_default(settings_t *s)
     s->magic = 'C';
     s->patch = FIRST_PATCH;
     s->view = VIEW_RASTER;
+    s->attack = DEFAULT_ATTACK;
+    s->decay = DEFAULT_DECAY;
+    s->sustain = DEFAULT_SUSTAIN;
+    s->release = DEFAULT_RELEASE;
     for (i = 0; i < NMAP; i++) {                /* off; given a CC, slot 1 moves a, 2 b ... 9 glide, 10 volume */
         s->map[i].cc = CC_OFF;
         map_reset(&s->map[i], i < P_N ? i : 0u);
@@ -992,7 +1091,7 @@ static void settings_check(settings_t *s)       /* what a power-off or another v
 }
 
 /* ---- the panel and the screens */
-enum { SCR_MAIN, SCR_CC, SCR_SAVE, SCR_EDIT, SCR_NAME };
+enum { SCR_MAIN, SCR_CC, SCR_SAVE, SCR_EDIT, SCR_NAME, SCR_ENV };
 static settings_t set;
 static uint32_t dirty, t_change;                /* the settings changed, when (saved 2 s later, when silent) */
 static uint32_t scr = SCR_MAIN, scr_fresh = 1;  /* the screen showing; to draw whole */
@@ -1059,6 +1158,7 @@ static void main_input(uint32_t b, uint32_t rel)
     if (b & (1u << BTN_FX)) { set.view = (uint8_t)((set.view + 1u) % VIEWS); changed(); }
     if (b & (1u << BTN_SAVE)) save_open();
     if (b & (1u << BTN_EDIT)) { side = 0; cpos = text_len(work); screen(SCR_EDIT); }   /* (it edits the left) */
+    if (b & (1u << BTN_ENV)) screen(SCR_ENV);
     if (b & (1u << BTN_PLAY) && vmode == MODE_MULTI) { side ^= 1u; patch_seq++; }
     if ((n = fm1_enc_take(ENC_PRESETS))) {
         if (side) { right_pick(patch_step(r_cur, n)); patch_seq++; }
@@ -1160,6 +1260,16 @@ static void name_input(uint32_t b, uint32_t keys_down)   /* the keys type A..Z a
         screen(SCR_SAVE);
 }
 
+static void env_input(uint32_t b)
+{
+    int32_t n;
+    if ((n = knob(ENC_KNOB1))) { param_set(P_ATTACK, param[P_ATTACK] + n); changed(); }
+    if ((n = knob(ENC_KNOB2))) { param_set(P_DECAY, param[P_DECAY] + n); changed(); }
+    if ((n = knob(ENC_KNOB3))) { param_set(P_SUSTAIN, param[P_SUSTAIN] + n); changed(); }
+    if ((n = knob(ENC_KNOB4))) { param_set(P_RELEASE, param[P_RELEASE] + n); changed(); }
+    if (b & (1u << BTN_ENV) || b & (1u << BTN_HOME)) screen(SCR_MAIN);
+}
+
 static void app_main(void)
 {
     uint32_t prev = 0, sounding = 0, k, t_load = 0, load = 0;
@@ -1177,6 +1287,10 @@ static void app_main(void)
     param_set(P_VOL, 127);
     param_set(P_WIDTH, 50);
     param_set(P_LLEN, 8);                       /* 4096 steps, half a second at middle C */
+    param_set(P_ATTACK, set.attack);
+    param_set(P_DECAY, set.decay);
+    param_set(P_SUSTAIN, set.sustain);
+    param_set(P_RELEASE, set.release);
     patch_pick(set.patch);
     if (set.patch < USER) param_set(P_GLIDE, set.glide);   /* (a slot brings its own) */
 
@@ -1219,6 +1333,7 @@ static void app_main(void)
         else if (scr == SCR_CC) cc_input(b);
         else if (scr == SCR_EDIT) edit_input(b, rel, down);
         else if (scr == SCR_NAME) name_input(b, down);
+        else if (scr == SCR_ENV) env_input(b);
         else save_input(b);
 
         while (midi_get(&st, &d1, &d2)) {       /* USB-MIDI in, any channel */
@@ -1236,7 +1351,7 @@ static void app_main(void)
         fm1_led_key(BTN_SEL, set.pick);
         fm1_led_key(BTN_GLO, scr == SCR_CC);
         fm1_led_key(BTN_SAVE, scr == SCR_SAVE || scr == SCR_NAME);
-        fm1_led_key(BTN_ENV, clearing);
+        fm1_led_key(BTN_ENV, scr == SCR_ENV || clearing);
         fm1_led_key(BTN_EDIT, scr == SCR_EDIT);
         fm1_led_key(BTN_PLAY, scr == SCR_EDIT ? audition : side);
         fm1_led_key(BTN_FX, scr == SCR_EDIT && fm1_in.buttons >> BTN_FX & 1u);
@@ -1307,6 +1422,17 @@ static void app_main(void)
                 for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
                 bank_drawn = bank;
                 draw_knobs_line(bank, 156);
+            }
+        } else if (scr == SCR_ENV) {
+            if (head_drawn) {
+                head_drawn = 0;
+                draw_head("ENVELOPE", "ENV", "back", "");
+                draw_legend(206, ENV_HELP, 2);
+            }
+            for (k = 0; k < 4u; k++) v[k] = param[P_ATTACK + k];
+            if (v[0] != v_drawn[0] || v[1] != v_drawn[1] || v[2] != v_drawn[2] || v[3] != v_drawn[3]) {
+                for (k = 0; k < 4u; k++) v_drawn[k] = v[k];
+                draw_env();
             }
         } else {
             for (k = 0; k < 4u; k++) v[k] = knob_param(bank, k) == P_N ? -2 : param[knob_param(bank, k)];
