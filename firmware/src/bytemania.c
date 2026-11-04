@@ -942,10 +942,10 @@ static void draw_name(const char *name)         /* the name screen: the name as 
 static void draw_env(void)
 {
     uint32_t i;
-    int32_t a = (int32_t)param[P_ATTACK];
-    int32_t d = (int32_t)param[P_DECAY];
-    int32_t s = (int32_t)param[P_SUSTAIN];
-    int32_t r = (int32_t)param[P_RELEASE];
+    int32_t a = param[P_ATTACK];
+    int32_t d = param[P_DECAY];
+    int32_t s = param[P_SUSTAIN];
+    int32_t r = param[P_RELEASE];
 
     cv_begin(240, 40, C_BG);
 
@@ -983,7 +983,7 @@ static void draw_env(void)
     cv_line(x2, y_sustain, x3, y_sustain, C_TEXT);
     cv_line(x3, y_sustain, x4, y_base, C_PINK);
 
-    cv_blit(0, 80);
+    cv_blit(0, 92);
 }
 
 /* ---- the editor's screen: the formula with the cursor, whether it compiles, the keys' tokens, the knobs, help */
