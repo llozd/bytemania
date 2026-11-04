@@ -113,12 +113,16 @@ static uint32_t loop_t(uint32_t pos, uint32_t mode, uint32_t start, uint32_t len
 
 enum { ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN };
 
-#define ENV_RATE(p, i) \
-    ((p) <= 127 ? (128 - (p)) : ((i % ((p) - 126)) == 0 ? 1 : 0))
+#define ENV_RATE(p, acc)                             \
+    ((p) <= 127 ? (128 - (p))                        \
+     : (((acc) += (256 - (p))),                      \
+        ((acc) >= 256)                               \
+        ? ((acc) -= 256, 1)                          \
+        : 0))
 
 static void app_audio(int32_t *out, uint32_t n)
 {
-    static struct { uint32_t pos, t, frac, inc, seq; int32_t amp, s; uint8_t env; } ln[NV];
+    static struct { uint32_t pos, t, frac, inc, seq; int32_t amp, s; uint8_t env; uint16_t env_acc; } ln[NV];
     /* pos: steps since the note began; t: where the loop puts it */
 
     const bb_prog_t *side_p[2] = {prog_live[0], prog_live[1]};
@@ -151,6 +155,7 @@ static void app_audio(int32_t *out, uint32_t n)
             ln[k].frac = 0;
             ln[k].inc = target;
             ln[k].env = ENV_ATTACK;
+            ln[k].env_acc = 0;
         }
         pos = ln[k].pos; t = ln[k].t; frac = ln[k].frac; inc = ln[k].inc; amp = ln[k].amp; s = ln[k].s;
         if (!amp && !g) continue;               /* silent: costs nothing */
@@ -171,19 +176,21 @@ static void app_audio(int32_t *out, uint32_t n)
             }
 
             if (ln[k].env == ENV_ATTACK && amp < g) {
-                amp += ENV_RATE(param[P_ATTACK], i);
+                amp += ENV_RATE(param[P_ATTACK], ln[k].env_acc);
                 if (amp > g) {
                     amp = g;
-                    ln[k].env == ENV_DECAY;
+                    ln[k].env = ENV_DECAY;
+                    ln[k].env_acc = 0;
                 }
             } else if (ln[k].env == ENV_DECAY && g) {
-                amp -= ENV_RATE(param[P_DECAY], i);
+                amp -= ENV_RATE(param[P_DECAY], ln[k].env_acc);
                 if (amp <= sustain_target) {
                     amp = sustain_target;
                     ln[k].env = ENV_SUSTAIN;
+                    ln[k].env_acc = 0;
                 }
             } else if (amp > g) {
-                amp -= ENV_RATE(param[P_RELEASE], i);
+                amp -= ENV_RATE(param[P_RELEASE], ln[k].env_acc);
                 if (amp < g) amp = g;
             }
 
@@ -940,7 +947,7 @@ static void draw_env(void)
     int32_t s = (int32_t)param[P_SUSTAIN];
     int32_t r = (int32_t)param[P_RELEASE];
 
-    cv_begin(240, 100, C_BG);
+    cv_begin(240, 40, C_BG);
 
     for (i = 0; i < 4u; i++) {
         char name[2], d_str[8];
@@ -955,8 +962,11 @@ static void draw_env(void)
         cv_text(x + 50 - text_w(&FONT_S, d_str), 14, &FONT_S, d_str, C_TEXT);
     }
 
+    cv_blit(0, 40);
+    cv_begin(240, 100, C_BG);
+
     /* Draw envelope shape visualization */
-    int32_t y_base = 90, y_peak = 40;
+    int32_t y_base = 99, y_peak = 0;
     int32_t total = a + d + 100 + r;
     if (total == 0) total = 1;
 
@@ -966,14 +976,14 @@ static void draw_env(void)
     int32_t x3 = x2 + 100 * 220 / total;
     int32_t x4 = x3 + r * 220 / total;
 
-    int32_t y_sustain = y_peak + (255 - s) * (y_base - y_peak) / 255;
+    int32_t y_sustain = y_peak + ((255 - s) * (y_base - y_peak)) / 255;
 
     cv_line(x0, y_base, x1, y_peak, C_PINK);
     cv_line(x1, y_peak, x2, y_sustain, C_CYAN);
     cv_line(x2, y_sustain, x3, y_sustain, C_TEXT);
     cv_line(x3, y_sustain, x4, y_base, C_PINK);
 
-    cv_blit(0, 80);
+    cv_blit(0, 180);
 }
 
 /* ---- the editor's screen: the formula with the cursor, whether it compiles, the keys' tokens, the knobs, help */
