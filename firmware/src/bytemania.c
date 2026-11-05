@@ -330,6 +330,11 @@ static uint32_t edited;                         /* work is not the patch's own f
 static const char *work_err;                    /* work does not compile (the last that did plays), and where */
 static uint32_t work_err_at;
 
+#define DEFAULT_ATTACK 80
+#define DEFAULT_DECAY 0
+#define DEFAULT_SUSTAIN 255
+#define DEFAULT_RELEASE 122
+
 static void copy_str(char *d, const char *s, uint32_t max)   /* at most max characters, 0-terminated */
 {
     uint32_t i;
@@ -413,11 +418,6 @@ static void right_copy(const char *name)        /* the left side as it plays, as
     right_set(name, work, v, 0);
     r_cur = cur;
 }
-
-#define DEFAULT_ATTACK 80
-#define DEFAULT_DECAY 0
-#define DEFAULT_SUSTAIN 255
-#define DEFAULT_RELEASE 122
 
 static void patch_pick(uint32_t p)
 {
