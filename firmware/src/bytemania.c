@@ -368,6 +368,12 @@ static void lib_init(void)
         s->name[sizeof s->name - 1u] = s->text[TEXT_MAX] = s->r_name[sizeof s->r_name - 1u] = s->r_text[TEXT_MAX] = 0;
         if (s->used != 1u || bb_compile(s->text, &check, 0)) memset(s, 0, sizeof *s);
         if (s->mode >= MODES) s->mode = MODE_MONO;
+        if (s->attack == 0 && s->decay == 0 && s->sustain == 0 && s->release == 0) {
+            s->attack = DEFAULT_ATTACK;
+            s->decay = DEFAULT_DECAY;
+            s->sustain = DEFAULT_SUSTAIN;
+            s->release = DEFAULT_RELEASE;
+        }
     }
 }
 
@@ -432,12 +438,6 @@ static void patch_pick(uint32_t p)
         param_set(P_LOOP, s->loop); param_set(P_LSTART, s->lstart); param_set(P_LFINE, s->lfine);
         param_set(P_LLEN, s->llen); param_set(P_GLIDE, s->glide);
         param_set(P_DETUNE, s->detune); param_set(P_OFFSET, s->offset); param_set(P_WIDTH, s->width ? s->width - 1 : 50);
-        if (s->attack == 0 && s->decay == 0 && s->sustain == 0 && s->release == 0) {
-            s->attack = DEFAULT_ATTACK;
-            s->decay = DEFAULT_DECAY;
-            s->sustain = DEFAULT_SUSTAIN;
-            s->release = DEFAULT_RELEASE;
-        }
         param_set(P_ATTACK, s->attack); param_set(P_DECAY, s->decay); param_set(P_SUSTAIN, s->sustain); param_set(P_RELEASE, s->release);
         if (vmode != s->mode) mode_set(s->mode);
         if (s->mode == MODE_MULTI && s->r_text[0]) { right_set(s->r_name, s->r_text, s->r_var, 0); r_cur = p; }
