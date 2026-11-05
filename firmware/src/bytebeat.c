@@ -2,6 +2,7 @@
 /* Bytebeat formulas: C expressions of t and the variables a..h, compiled in the main loop into a small
  * stack program that the audio interrupt runs once per step of t.
  *
+ *   [ a..h = expr , ]... expr
  *   t  a..h  123  0x7F  ( )
  *   ?:  ||  &&  |  ^  &  == !=  < <= > >=  << >>  + -  * / %  unary - ~ !
  *
@@ -19,7 +20,7 @@ enum {
     OP_NEG, OP_NOT, OP_LNOT,
     OP_MUL, OP_DIV, OP_MOD, OP_ADD, OP_SUB, OP_SHL, OP_SHR,
     OP_LT, OP_LE, OP_GT, OP_GE, OP_EQ, OP_NE,
-    OP_AND, OP_XOR, OP_OR, OP_LAND, OP_LOR, OP_SEL
+    OP_AND, OP_XOR, OP_OR, OP_LAND, OP_LOR, OP_SEL, OP_SET,
 };
 
 typedef struct {
@@ -29,7 +30,7 @@ typedef struct {
 } bb_prog_t;
 
 /* ---- run (the audio interrupt: no calls out, no division by zero) */
-static int32_t bb_run(const bb_prog_t *p, uint32_t t, const int32_t *var)
+static int32_t bb_run(const bb_prog_t *p, uint32_t t, int32_t *var)
 {
     int32_t s[BB_STACK], x, y;
     uint32_t i, sp = 0;
@@ -42,6 +43,7 @@ static int32_t bb_run(const bb_prog_t *p, uint32_t t, const int32_t *var)
         case OP_NOT: s[sp - 1] = ~s[sp - 1]; continue;
         case OP_LNOT: s[sp - 1] = !s[sp - 1]; continue;
         case OP_SEL: sp -= 2; s[sp - 1] = s[sp - 1] ? s[sp] : s[sp + 1]; continue;
+        case OP_SET: var[p->arg[i]] = s[--sp]; continue;
         default: break;
         }
         y = s[--sp];                            /* a binary op: x op y */
@@ -178,12 +180,33 @@ static void cc_cond(bb_cc_t *c)
     cc_emit(c, OP_SEL, 0);
 }
 
+static int cc_assign(bb_cc_t *c)
+{
+    uint32_t save = c->pos;
+    char ch = cc_peek(c);
+    if (ch >= 'a' && ch <= 'h') {
+        c->pos++;
+        if (cc_peek(c) == '=' && c->s[c->pos + 1] != '=') {
+            c->pos++;
+            cc_cond(c);
+            if (c->err) return 1;
+            if (cc_peek(c) != ',') { cc_fail(c, "missing ,"); return 1; }
+            c->pos++;
+            cc_emit(c, OP_SET, ch - 'a');
+            return 1;
+        }
+    }
+    c->pos = save;
+    return 0;
+}
+
 /* 0 = compiled into *p; else the error, and *errpos where it is. *p is changed either way. */
 static const char *bb_compile(const char *s, bb_prog_t *p, uint32_t *errpos)
 {
     bb_cc_t c = {s, 0, 0, p, 0};
     p->n = 0;
-    cc_cond(&c);
+    while (!c.err && cc_assign(&c)) {}
+    if (!c.err) cc_cond(&c);
     if (!c.err && cc_peek(&c)) cc_fail(&c, "unexpected character");
     if (errpos) *errpos = c.pos;
     return c.err;

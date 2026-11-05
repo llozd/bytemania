@@ -56,7 +56,7 @@ static void rb_block(rb_t *r)
 }
 
 /* Heard in advance: enough different values, not mostly 0, moving, and not noise (uniform noise moves ~85 a step) */
-static int rb_good(const bb_prog_t *p, const int32_t *var)
+static int rb_good(const bb_prog_t *p, int32_t *var)
 {
     uint32_t seen[8] = {0}, distinct = 0, zeros = 0, moves = 0, diff = 0, t, i, prev = 0;
     for (t = 0; t < 65536u; t += 16u) {         /* 4096 samples over 8 s at middle C */

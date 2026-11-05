@@ -513,7 +513,7 @@ static const char *const TOK_WHITE[2][16] = {
 };
 static const char *const TOK_BLACK[2][11] = {
     {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "^"},
-    {"0x", "A", "B", "C", "D", "E", "F", " ", "", "", ""},
+    {"0x", "A", "B", "C", "D", "E", "F", " ", "=", ",", ""},
 };
 
 static int key_black(uint32_t k) { return (0x54Au >> ((53u + k) % 12u)) & 1u; }   /* key 0 = F3 */

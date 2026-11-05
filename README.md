@@ -300,6 +300,12 @@ t  a..h  123  0x7F  ( )
 Precedence is C's. Where C would be undefined, Bytemania defines it: overflow wraps, shifts use their count `& 31`,
 and `x / 0` and `x % 0` are 0. Nothing has side effects, so `?:`, `&&` and `||` evaluate both sides.
 
+Variable assignments are supported. Assignments should come before the expression, separated by commas.
+
+Syntax is `{var}={expr}, ..., {expr}`. For example: `e=t*a>>b, f=e&0xFF, f/(0xFF-f)`
+
+
+
 ## Building
 
 You need Linux on x86-64 (or macOS / Windows with Docker or WSL), Python 3 with Pillow, the JieLi toolchain and the
