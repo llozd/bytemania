@@ -277,8 +277,7 @@ def main():
     if a.release:                   # one digit each: the identity has room for two (X.Y; a .Z only in the text)
         m = re.fullmatch(r"(\d)\.(\d)(\.\d)?(-[A-Za-z0-9]+)?", a.release)
         if not m:
-            print(f"WARNING: --release {a.release}: use X.Y, X.Y.Z or X.Y-suffix, one digit each instead. Defaulting to 1.0")
-            m = ["", "1", "0", ""]
+            raise SystemExit(f"--release {a.release}: use X.Y, X.Y.Z or X.Y-suffix, one digit each")
         PRODUCT = "FM-1_94" + m[2]
         VERSION = m[1] + "." + m[2] + (m[3] or "")
         name = f"bytemania-{a.release}.fwsc"
