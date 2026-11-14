@@ -365,3 +365,5 @@ Bytemania is GPL-3.0-only. It's built on [Dinghy](https://github.com/zvenson/din
 Terminus and Press Start 2P, both under the SIL Open Font License. See [LICENSING.md](LICENSING.md) for who made what.
 
 Bytemania is not made or endorsed by M-VAVE.
+
+You can also try Bytemania in the browser, no flashing needed, in the free community [FM-1 Emulator](https://fm1-emulator.atst.tools/).
