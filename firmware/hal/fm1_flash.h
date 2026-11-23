@@ -143,7 +143,7 @@ RAMINL int fl_wait_ready(uint32_t max_us, uint32_t *took_us)
 
 /* ---- entry points: IRQs OFF, args/buffers in RAM ---- */
 
-static RAMFN uint32_t fl_jedec_ram(void)                 /* expect 0x856014 or 0xB36014 */
+static RAMFN uint32_t fl_jedec_ram(void)                 /* see fl_jedec_known */
 {
     fl_saved_t s; uint32_t id;
     if (fl_enter(&s)) return 0;
@@ -152,6 +152,12 @@ static RAMFN uint32_t fl_jedec_ram(void)                 /* expect 0x856014 or 0
     fl_cs(1);
     fl_exit(&s);
     return id;
+}
+
+static inline int fl_jedec_known(uint32_t id)             /* the 1 MiB parts fitted to FM-1s */
+{
+    return id == 0x856014u                               /* original units */
+        || id == 0xB36014u;                              /* newer units */
 }
 
 static RAMFN uint32_t fl_status_ram(void)                /* SR1 | SR2 << 8 */
